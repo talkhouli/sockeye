@@ -23,12 +23,12 @@ from typing import Dict, Optional
 import mxnet as mx
 
 import sockeye.output_handler
-from . import evaluate
-from . import chrf
-from . import constants as C
-from . import data_io
-from . import inference
-from . import utils
+import evaluate
+import chrf
+import constants as C
+import data_io
+import inference
+import utils
 
 logger = logging.getLogger(__name__)
 

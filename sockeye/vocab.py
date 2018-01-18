@@ -22,10 +22,10 @@ from itertools import chain, islice
 from typing import Dict, Iterable, List, Mapping
 
 from sockeye.data_io import get_tokens, smart_open
-from . import utils
-from . import arguments
-from . import constants as C
-from . import log
+import utils
+import arguments
+import constants as C
+import log
 
 logger = logging.getLogger(__name__)
 

@@ -20,13 +20,13 @@ import mxnet as mx
 
 from sockeye import __version__
 from sockeye.config import Config
-from . import constants as C
-from . import data_io
-from . import decoder
-from . import encoder
-from . import layers
-from . import loss
-from . import utils
+import constants as C
+import data_io
+import decoder
+import encoder
+import layers
+import loss
+import utils
 
 logger = logging.getLogger(__name__)
 

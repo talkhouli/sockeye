@@ -20,8 +20,8 @@ import os
 from typing import Callable, Optional
 
 from sockeye.lr_scheduler import LearningRateSchedulerFixedStep
-from . import constants as C
-from . import data_io
+import constants as C
+import data_io
 
 
 def regular_file() -> Callable:
@@ -246,6 +246,10 @@ def add_io_args(params):
                              required=True,
                              type=regular_file(),
                              help='Target side of parallel training data.')
+    data_params.add_argument('--alignment', '-a',
+                             required=False,
+                             type=regular_file(),
+                             help='Flat alignment training file, alignment point e.g. S 0 1.')
     data_params.add_argument('--limit',
                              default=None,
                              type=int,
@@ -259,6 +263,10 @@ def add_io_args(params):
                              required=True,
                              type=regular_file(),
                              help='Target side of validation data.')
+    data_params.add_argument('--validation-alignment', '-va',
+                             required=False,
+                             type=regular_file(),
+                             help='Flat alignment validation file, alignment point e.g. S 0 1.')
 
     data_params.add_argument('--output', '-o',
                              required=True,

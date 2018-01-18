@@ -19,11 +19,11 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import mxnet as mx
 
-from . import config
-from . import constants as C
-from . import coverage
-from . import layers
-from . import utils
+import config
+import constants as C
+import coverage
+import layers
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,8 @@ class AttentionConfig(config.Config):
                  query_num_hidden: int,
                  layer_normalization: bool,
                  config_coverage: Optional[coverage.CoverageConfig] = None,
-                 num_heads: Optional[int] = None) -> None:
+                 num_heads: Optional[int] = None,
+                 alignment_bias: bool = False) -> None:
         super().__init__()
         self.type = type
         self.num_hidden = num_hidden
@@ -59,6 +60,7 @@ class AttentionConfig(config.Config):
         self.layer_normalization = layer_normalization
         self.config_coverage = config_coverage
         self.num_heads = num_heads
+        self.alignment_bias = alignment_bias
 
 
 def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
@@ -91,7 +93,8 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
     elif config.type == C.ATT_MLP:
         return MlpAttention(input_previous_word=config.input_previous_word,
                             attention_num_hidden=config.num_hidden,
-                            layer_normalization=config.layer_normalization)
+                            layer_normalization=config.layer_normalization,
+                            alignment_bias=config.alignment_bias)
     elif config.type == C.ATT_COV:
         return MlpAttention(input_previous_word=config.input_previous_word,
                             attention_num_hidden=config.num_hidden,
@@ -152,7 +155,7 @@ class Attention(object):
         :return: Attention callable.
         """
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
@@ -234,7 +237,7 @@ class BilinearAttention(Attention):
                                               flatten=False,
                                               name="%ssource_hidden_fc" % self.prefix)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState, alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
@@ -315,7 +318,7 @@ class DotAttention(Attention):
         else:
             source_hidden = source
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
@@ -405,7 +408,7 @@ class MultiHeadDotAttention(Attention):
         keys = layers.split_heads(keys, self.num_hidden_per_head, self.heads)
         values = layers.split_heads(values, self.num_hidden_per_head, self.heads)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
@@ -480,7 +483,7 @@ class EncoderLastStateAttention(Attention):
                                                  use_sequence_length=True)
         fixed_probs = mx.sym.one_hot(source_length - 1, depth=source_seq_len)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
             return AttentionState(context=encoder_last_state,
                                   probs=fixed_probs,
                                   dynamic_source=att_state.dynamic_source)
@@ -520,7 +523,7 @@ class LocationAttention(Attention):
         :return: Attention callable.
         """
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
@@ -577,7 +580,8 @@ class MlpAttention(Attention):
                  input_previous_word: bool,
                  attention_num_hidden: int,
                  layer_normalization: bool = False,
-                 config_coverage: Optional[coverage.CoverageConfig] = None) -> None:
+                 config_coverage: Optional[coverage.CoverageConfig] = None,
+                 alignment_bias: bool = False) -> None:
         dynamic_source_num_hidden = 1 if config_coverage is None else config_coverage.num_hidden
         super().__init__(input_previous_word=input_previous_word,
                          dynamic_source_num_hidden=dynamic_source_num_hidden)
@@ -590,6 +594,9 @@ class MlpAttention(Attention):
         self.att_h2s_weight = mx.sym.Variable("%sh2s_weight" % self.prefix)
         # coverage
         self.coverage = coverage.get_coverage(config_coverage) if config_coverage is not None else None
+        #alignment bias
+        self.alignment_bias = alignment_bias
+        self.att_align_bias = mx.sym.Variable("%salign_bias" % self.prefix, shape=(attention_num_hidden,)) if alignment_bias else None
         # dynamic source (coverage) weights and settings
         # input (coverage) to hidden
         self.att_c2h_weight = mx.sym.Variable("%sc2h_weight" % self.prefix) if config_coverage is not None else None
@@ -619,12 +626,14 @@ class MlpAttention(Attention):
                                               flatten=False,
                                               name="%ssource_hidden_fc" % self.prefix)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: Shape: (batch_size,)
             :return: Updated attention state.
             """
 
@@ -656,6 +665,17 @@ class MlpAttention(Attention):
             # (batch_size, seq_len, attention_num_hidden)
             attention_hidden = mx.sym.broadcast_add(lhs=attention_hidden_lhs, rhs=query_hidden,
                                                     name="%squery_plus_input" % self.prefix)
+
+            if self.alignment_bias:
+                #(batch_size, 1, seq_len)
+                alignment_one_hot = mx.sym.one_hot(alignment,source_seq_len,name="%salignment_one_hot" % self.prefix)
+                #(batch_size,attention_num_hidden,seq_len)
+                alignment_one_hot = mx.sym.broadcast_to(data=alignment_one_hot,shape=(0,self.attention_num_hidden,0))
+                #(batch_size,seq_len,attention_num_hidden)
+                alignment_one_hot = mx.sym.swapaxes(alignment_one_hot,1,2)
+                #(batch_size,seq_len,attention_num_hidden)
+                seq_align_bias = mx.sym.broadcast_mul(rhs=self.att_align_bias, lhs=alignment_one_hot)
+                attention_hidden = seq_align_bias + attention_hidden
 
             if self._ln is not None:
                 attention_hidden = self._ln.normalize(attention_hidden)

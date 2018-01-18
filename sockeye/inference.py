@@ -22,12 +22,12 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Union, Set
 import mxnet as mx
 import numpy as np
 
-from . import constants as C
-from . import data_io
-from . import lexicon
-from . import model
-from . import utils
-from . import vocab
+import constants as C
+import data_io
+import lexicon
+import model
+import utils
+import vocab
 
 logger = logging.getLogger(__name__)
 

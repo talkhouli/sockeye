@@ -15,9 +15,9 @@
 Convolutional layers.
 """
 from sockeye.config import Config
-from . import utils
-from . import constants as C
-from . import layers
+import utils
+import constants as C
+import layers
 
 import mxnet as mx
 

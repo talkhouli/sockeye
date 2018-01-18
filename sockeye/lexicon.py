@@ -22,12 +22,12 @@ from typing import Dict, Generator, Tuple
 import mxnet as mx
 import numpy as np
 
-from . import arguments
-from . import constants as C
-from .data_io import smart_open
-from .log import setup_main_logger, log_sockeye_version
-from .utils import check_condition
-from . import vocab
+import arguments
+import constants as C
+from data_io import smart_open
+from log import setup_main_logger, log_sockeye_version
+from utils import check_condition
+import vocab
 
 logger = logging.getLogger(__name__)
 

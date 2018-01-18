@@ -21,8 +21,8 @@ from typing import List, Optional
 import mxnet as mx
 from mxnet.metric import EvalMetric
 
-from . import config
-from . import constants as C
+import config
+import constants as C
 
 logger = logging.getLogger(__name__)
 

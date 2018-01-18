@@ -18,8 +18,8 @@ from typing import Dict, Optional, Tuple, Union
 import mxnet as mx
 import numpy as np
 
-from . import constants as C
-from . import utils
+import constants as C
+import utils
 
 logger = logging.getLogger(__name__)
 

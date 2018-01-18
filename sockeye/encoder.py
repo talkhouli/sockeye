@@ -23,11 +23,11 @@ from typing import Callable, List, Optional, Tuple
 import mxnet as mx
 
 from sockeye.config import Config
-from . import constants as C
-from . import rnn
-from . import convolution
-from . import transformer
-from . import utils
+import constants as C
+import rnn
+import convolution
+import transformer
+import utils
 
 logger = logging.getLogger(__name__)
 

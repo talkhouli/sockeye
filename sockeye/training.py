@@ -28,15 +28,15 @@ from math import sqrt
 import mxnet as mx
 import numpy as np
 
-from . import callback
-from . import checkpoint_decoder
-from . import constants as C
-from . import data_io
-from . import loss
-from . import lr_scheduler
-from .optimizers import BatchState, CheckpointState, SockeyeOptimizer
-from . import model
-from . import utils
+import callback
+import checkpoint_decoder
+import constants as C
+import data_io
+import loss
+import lr_scheduler
+from optimizers import BatchState, CheckpointState, SockeyeOptimizer
+import model
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ class TrainingModel(model.SockeyeModel):
         target = mx.sym.Variable(C.TARGET_NAME)
         target_length = utils.compute_lengths(target)
         labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME), shape=(-1,))
+        alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
 
         model_loss = loss.get_loss(self.config.config_loss)
 
@@ -138,7 +139,8 @@ class TrainingModel(model.SockeyeModel):
             # decoder
             # target_decoded: (batch-size, target_len, decoder_depth)
             target_decoded = self.decoder.decode_sequence(source_encoded, source_encoded_length, source_encoded_seq_len,
-                                                          target_embed, target_embed_length, target_embed_seq_len)
+                                                          target_embed, target_embed_length, target_embed_seq_len,
+                                                          alignment)
 
             # target_decoded: (batch_size * target_seq_len, rnn_num_hidden)
             target_decoded = mx.sym.reshape(data=target_decoded, shape=(-3, 0))

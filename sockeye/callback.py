@@ -25,9 +25,9 @@ from typing import List, Optional, Tuple, Dict
 
 import mxnet as mx
 
-from . import checkpoint_decoder
-from . import constants as C
-from . import utils
+import checkpoint_decoder
+import constants as C
+import utils
 
 logger = logging.getLogger(__name__)
 

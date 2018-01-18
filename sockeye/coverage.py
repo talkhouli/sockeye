@@ -19,11 +19,11 @@ from typing import Callable
 
 import mxnet as mx
 
-from . import config
-from . import constants as C
-from . import layers
-from . import rnn
-from . import utils
+import config
+import constants as C
+import layers
+import rnn
+import utils
 
 logger = logging.getLogger(__name__)
 

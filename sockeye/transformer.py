@@ -16,9 +16,9 @@ from typing import Dict, Optional
 import mxnet as mx
 import numpy as np
 
-from . import config
-from . import constants as C
-from . import layers
+import config
+import constants as C
+import layers
 
 
 class TransformerConfig(config.Config):

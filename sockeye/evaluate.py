@@ -21,11 +21,11 @@ from typing import Iterable, Optional
 
 from contrib import sacrebleu
 from sockeye.log import setup_main_logger, log_sockeye_version
-from . import arguments
-from . import chrf
-from . import constants as C
-from . import data_io
-from . import utils
+import arguments
+import chrf
+import constants as C
+import data_io
+import utils
 
 logger = setup_main_logger(__name__, file_logging=False)
 

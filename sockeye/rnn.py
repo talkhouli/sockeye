@@ -18,8 +18,8 @@ import mxnet as mx
 
 from sockeye.config import Config
 from sockeye.layers import LayerNormalization
-from . import constants as C
-from . import utils
+import constants as C
+import utils
 
 
 class RNNConfig(Config):

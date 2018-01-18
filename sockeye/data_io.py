@@ -27,8 +27,8 @@ import mxnet as mx
 import numpy as np
 
 from sockeye.utils import check_condition
-from . import config
-from . import constants as C
+import config
+import constants as C
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,9 @@ def get_training_data_iters(source: str, target: str,
                             max_seq_len_target: int,
                             bucketing: bool,
                             bucket_width: int,
-                            sequence_limit: Optional[int] = None) -> Tuple['ParallelBucketSentenceIter',
+                            sequence_limit: Optional[int] = None,
+                            alignment: str = None,
+                            validation_alignment: str = None) -> Tuple['ParallelBucketSentenceIter',
                                                                            'ParallelBucketSentenceIter',
                                                                            'DataConfig']:
     """
@@ -156,6 +158,7 @@ def get_training_data_iters(source: str, target: str,
     # streams id-coded sentences from disk
     train_source_sentences = SentenceReader(source, vocab_source, add_bos=False, limit=sequence_limit)
     train_target_sentences = SentenceReader(target, vocab_target, add_bos=True, limit=sequence_limit)
+    train_alignment_sentences = AlignmentReader(alignment, add_bos=True, limit=sequence_limit) if alignment is not None else []
 
     # reads the id-coded sentences from disk once
     lr_mean, lr_std = length_statistics(train_source_sentences, train_target_sentences)
@@ -181,12 +184,14 @@ def get_training_data_iters(source: str, target: str,
                                             vocab_target[C.EOS_SYMBOL],
                                             C.PAD_ID,
                                             vocab_target[C.UNK_SYMBOL],
+                                            train_alignment_sentences,
                                             bucket_batch_sizes=None,
                                             fill_up=fill_up)
 
     logger.info("Creating validation data iterator")
     val_source_sentences = SentenceReader(validation_source, vocab_source, add_bos=False, limit=None)
     val_target_sentences = SentenceReader(validation_target, vocab_target, add_bos=True, limit=None)
+    val_alignment_sentences = AlignmentReader(validation_alignment, add_bos=True, limit=sequence_limit) if alignment is not None else []
 
     val_iter = ParallelBucketSentenceIter(val_source_sentences,
                                           val_target_sentences,
@@ -197,6 +202,7 @@ def get_training_data_iters(source: str, target: str,
                                           vocab_target[C.EOS_SYMBOL],
                                           C.PAD_ID,
                                           vocab_target[C.UNK_SYMBOL],
+                                          val_alignment_sentences,
                                           bucket_batch_sizes=train_iter.bucket_batch_sizes,
                                           fill_up=fill_up)
 
@@ -208,7 +214,8 @@ def get_training_data_iters(source: str, target: str,
     config_data = DataConfig(source, target,
                              validation_source, validation_target,
                              vocab_source_path, vocab_target_path,
-                             lr_mean, lr_std, train_iter.max_observed_source_len, train_iter.max_observed_target_len)
+                             lr_mean, lr_std, train_iter.max_observed_source_len, train_iter.max_observed_target_len,
+                             alignment,validation_alignment)
 
     return train_iter, val_iter, config_data
 
@@ -227,12 +234,16 @@ class DataConfig(config.Config):
                  length_ratio_mean: float = C.TARGET_MAX_LENGTH_FACTOR,
                  length_ratio_std: float = 0.0,
                  max_observed_source_seq_len: Optional[int] = None,
-                 max_observed_target_seq_len: Optional[int] = None) -> None:
+                 max_observed_target_seq_len: Optional[int] = None,
+                 alignment: str = None,
+                 validation_alignment :str = None) -> None:
         super().__init__()
         self.source = source
         self.target = target
+        self.alignment = alignment
         self.validation_source = validation_source
         self.validation_target = validation_target
+        self.validation_alignment = validation_alignment
         self.vocab_source = vocab_source
         self.vocab_target = vocab_target
         self.length_ratio_mean = length_ratio_mean
@@ -262,7 +273,7 @@ def smart_open(filename: str, mode: str = "rt", ftype: str = "auto", errors:str 
         return open(filename, mode=mode, encoding='utf-8', errors=errors)
 
 
-def read_content(path: str, limit: Optional[int] = None) -> Iterator[List[str]]:
+def read_content(path: str, limit: Optional[int] = None, alignment: bool = False) -> Iterator[List[str]]:
     """
     Returns a list of tokens for each line in path up to a limit.
 
@@ -274,7 +285,15 @@ def read_content(path: str, limit: Optional[int] = None) -> Iterator[List[str]]:
         for i, line in enumerate(indata):
             if limit is not None and i == limit:
                 break
-            yield list(get_tokens(line))
+            if alignment:
+                align_pairs = get_alignment(line)
+                align = [-1] * max([i+1 for _,i in align_pairs])
+                for j,i in get_alignment(line):
+                    assert align[i] == -1
+                    align[i] = j
+                yield align
+            else:
+                yield list(get_tokens(line))
 
 
 def get_tokens(line: str) -> Iterator[str]:
@@ -287,6 +306,29 @@ def get_tokens(line: str) -> Iterator[str]:
     for token in line.rstrip().split():
         if len(token) > 0:
             yield token
+
+def get_alignment(line: str) -> (int,int):
+    """
+    Yields alignments pairs (src_pos, tgt_pos)
+
+    :param line: Alignment input string.
+    :return: Iterator over alignment points.
+    """
+    done = False
+    src_pos = -1
+    tgt_pos = -1
+    cnt = -1
+    for token in line.rstrip().split():
+        cnt+=1
+        if token == "S" and cnt == 0:
+            continue
+        if cnt == 1:
+            src_pos = int(token)
+        elif cnt == 2:
+            tgt_pos = int(token)
+            cnt=-1
+            yield (src_pos,tgt_pos)
+
 
 
 def tokens2ids(tokens: Iterable[str], vocab: Dict[str, int]) -> List[int]:
@@ -353,6 +395,56 @@ class SentenceReader(Iterator):
                 self._iterated_once = True
 
         return sentence
+
+    def is_done(self):
+        return self._iterated_once and self._next is None
+
+class AlignmentReader(Iterator):
+    """
+    Reads sentences from path and creates word id sentences.
+    Streams from disk, instead of loading all sentences into memory.
+
+    :param path: Path to read data from.
+    :param add_bos: Whether to add Beginning-Of-Sentence (BOS) symbol.
+    :param limit: Read limit.
+    """
+
+    def __init__(self, path: str, add_bos: bool = False, limit: Optional[int] = None) -> None:
+        self.path = path
+        self.add_bos = add_bos
+        self.limit = limit
+        self._iter = None  # type: Optional[Iterator]
+        self._iterated_once = False
+        self.count = 0
+        self._next = None
+
+    def __iter__(self):
+        assert self._next is None, "Can not iterate multiple times simultaneously."
+        self._iter = read_content(self.path, self.limit, alignment=True)
+        self._next = next(self._iter, None)
+        return self
+
+    def __next__(self):
+        if self._next is None:
+            raise StopIteration
+
+        alignment = self._next
+        check_condition(bool(alignment), "Empty alignment in file %s" % self.path)
+        if self.add_bos:
+            alignment = [i+1 if i != -1 else -1 for i in alignment]
+            alignment.insert(0,0)
+
+        if not self._iterated_once:
+            self.count += 1
+
+        # fetch next element
+        self._next = next(self._iter, None)
+        if self._next is None:
+            self._iter = None
+            if not self._iterated_once:
+                self._iterated_once = True
+
+        return alignment
 
     def is_done(self):
         return self._iterated_once and self._next is None
@@ -433,10 +525,12 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                  eos_id: int,
                  pad_id: int,
                  unk_id: int,
+                 alignment: Iterable[List[int]] = [],
                  bucket_batch_sizes: Optional[List[BucketBatchSize]] = None,
                  fill_up: Optional[str] = None,
                  source_data_name=C.SOURCE_NAME,
                  target_data_name=C.TARGET_NAME,
+                 alignment_data_name=C.ALIGNMENT_NAME,
                  label_name=C.TARGET_LABEL_NAME,
                  dtype='float32') -> None:
         super(ParallelBucketSentenceIter, self).__init__()
@@ -453,12 +547,17 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.dtype = dtype
         self.source_data_name = source_data_name
         self.target_data_name = target_data_name
+        self.alignment_data_name = alignment_data_name
         self.label_name = label_name
         self.fill_up = fill_up
 
         self.data_source = [[] for _ in self.buckets]  # type: ignore
         self.data_target = [[] for _ in self.buckets]  # type: ignore
         self.data_label = [[] for _ in self.buckets]  # type: ignore
+        self.data_alignment = None
+        if alignment != []:
+            self.data_alignment = [[] for _ in self.buckets]  # type: ignore
+
         self.data_target_average_len = [0 for _ in self.buckets]
 
         # Per-bucket batch sizes (num seq, num word)
@@ -468,7 +567,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         # assign sentence pairs to buckets
         self.max_observed_source_len = 0
         self.max_observed_target_len = 0
-        self._assign_to_buckets(source_sentences, target_sentences)
+        self._assign_to_buckets(source_sentences, target_sentences, alignment)
 
         # convert to single numpy array for each bucket
         self._convert_to_array()
@@ -495,6 +594,13 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.data_names = [self.source_data_name, self.target_data_name]
         self.label_names = [self.label_name]
 
+        if alignment != []:
+            self.provide_data.append(
+                                mx.io.DataDesc(name=self.alignment_data_name,
+                                shape=(self.bucket_batch_sizes[-1].batch_size, self.default_bucket_key[1]),
+                                layout=C.BATCH_MAJOR))
+            self.data_names.append(self.alignment_data_name)
+
         # create index tuples (i,j) into buckets: i := bucket index ; j := row index of bucket array
         self.idx = []  # type: List[Tuple[int, int]]
         for i, buck in enumerate(self.data_source):
@@ -512,9 +618,11 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_target = []  # type: List[mx.ndarray]
         self.nd_label = []  # type: List[mx.ndarray]
 
+        self.nd_alignment = []  if alignment != [] else None # type: List[mx.ndarray]
+
         self.reset()
 
-    def _assign_to_buckets(self, source_sentences, target_sentences):
+    def _assign_to_buckets(self, source_sentences, target_sentences, alignment_sentences):
         ndiscard = 0
         tokens_source = 0
         tokens_target = 0
@@ -522,7 +630,11 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         num_of_unks_target = 0
 
         # Bucket sentences as padded np arrays
-        for source, target in zip(source_sentences, target_sentences):
+        zip_list = [source_sentences, target_sentences] + ([alignment_sentences] if alignment_sentences!=[] else [])
+        for elements in zip(*zip_list):
+            source = elements[0]
+            target = elements[1]
+            alignment = elements[2] if len(elements)>2 else None
             source_len = len(source)
             target_len = len(target)
             buck_idx, buck = get_parallel_bucket(self.buckets, source_len, target_len)
@@ -554,6 +666,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             self.data_target[buck_idx].append(buff_target)
             self.data_label[buck_idx].append(buff_label)
             self.data_target_average_len[buck_idx] += target_len
+            if alignment is not None:
+                buff_alignment = np.full((buck[1],), self.pad_id, dtype=self.dtype)
+                buff_alignment[:len(alignment)] = alignment
+                self.data_alignment[buck_idx].append(buff_alignment)
 
         # Average number of non-padding elements in target sequence per bucket
         for buck_idx, buck in enumerate(self.buckets):
@@ -647,6 +763,8 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             self.data_source[i] = np.asarray(self.data_source[i], dtype=self.dtype)
             self.data_target[i] = np.asarray(self.data_target[i], dtype=self.dtype)
             self.data_label[i] = np.asarray(self.data_label[i], dtype=self.dtype)
+            if self.data_alignment is not None:
+                self.data_alignment[i] = np.asarray(self.data_alignment[i], dtype=self.dtype)
 
             n = len(self.data_source[i])
             batch_size_seq = self.bucket_batch_sizes[i].batch_size
@@ -665,6 +783,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                                                          axis=0)
                     self.data_label[i] = np.concatenate((self.data_label[i], self.data_label[i][random_indices, :]),
                                                          axis=0)
+                    if self.data_alignment is not None:
+                        self.data_alignment[i] = np.concatenate((self.data_alignment[i],
+                                                                 self.data_alignment[i][random_indices, :]), axis=0)
+
 
     def reset(self):
         """
@@ -677,6 +799,8 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_source = []
         self.nd_target = []
         self.nd_label = []
+        if self.nd_alignment is not None:
+            self.nd_alignment = []
         self.indices = []
         for i in range(len(self.data_source)):
             # shuffle indices within each bucket
@@ -694,6 +818,8 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_source.append(mx.nd.array(self.data_source[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
         self.nd_target.append(mx.nd.array(self.data_target[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
         self.nd_label.append(mx.nd.array(self.data_label[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
+        if self.nd_alignment is not None:
+            self.nd_alignment.append(mx.nd.array(self.data_alignment[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
 
     def iter_next(self) -> bool:
         """
@@ -715,6 +841,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         source = self.nd_source[i][j:j + batch_size_seq]
         target = self.nd_target[i][j:j + batch_size_seq]
         data = [source, target]
+
+        if self.nd_alignment is not None:
+            alignment = self.nd_alignment[i][j:j + batch_size_seq]
+            data.append(alignment)
 
         label = [self.nd_label[i][j:j + batch_size_seq]]
 
@@ -761,5 +891,8 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_source = []
         self.nd_target = []
         self.nd_label = []
+        # TODO (Tamer): does this work?
+        if self.nd_alignment is not None:
+            self.nd_alignment = []
         for i in range(len(self.data_source)):
             self._append_ndarrays(i, self.indices[i])

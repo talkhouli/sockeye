@@ -28,23 +28,23 @@ import mxnet as mx
 from sockeye.config import Config
 from sockeye.log import setup_main_logger
 from sockeye.utils import check_condition
-from . import arguments
-from . import rnn_attention
-from . import constants as C
-from . import coverage
-from . import data_io
-from . import decoder
-from . import encoder
-from . import initializer
-from . import loss
-from . import lr_scheduler
-from . import model
-from . import rnn
-from . import convolution
-from . import training
-from . import transformer
-from . import utils
-from . import vocab
+import arguments
+import rnn_attention
+import constants as C
+import coverage
+import data_io
+import decoder
+import encoder
+import initializer
+import loss
+import lr_scheduler
+import model
+import rnn
+import convolution
+import training
+import transformer
+import utils
+import vocab
 
 # Temporary logger, the real one (logging to a file probably, will be created in the main function)
 logger = setup_main_logger(__name__, file_logging=False, console=True)
@@ -291,7 +291,10 @@ def create_data_iters(args: argparse.Namespace,
                                            max_seq_len_target=max_seq_len_target,
                                            bucketing=not args.no_bucketing,
                                            bucket_width=args.bucket_width,
-                                           sequence_limit=args.limit)
+                                           sequence_limit=args.limit,
+                                           alignment=os.path.abspath(args.alignment) if args.alignment else None,
+                                           validation_alignment=os.path.abspath(
+                                            args.validation_alignment) if args.validation_alignment else None)
 
 
 def create_lr_scheduler(args: argparse.Namespace, resume_training: bool,
@@ -448,7 +451,8 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
                                                          query_num_hidden=args.rnn_num_hidden,
                                                          layer_normalization=args.layer_normalization,
                                                          config_coverage=config_coverage,
-                                                         num_heads=args.rnn_attention_mhdot_heads)
+                                                         num_heads=args.rnn_attention_mhdot_heads,
+                                                         alignment_bias=args.alignment is not None)
 
         _, decoder_rnn_dropout_inputs = args.rnn_dropout_inputs
         _, decoder_rnn_dropout_states = args.rnn_dropout_states

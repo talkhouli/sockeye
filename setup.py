@@ -1,4 +1,5 @@
 import sys
+import io
 import os
 import re
 import logging
@@ -11,7 +12,7 @@ ROOT = os.path.dirname(__file__)
 
 
 def get_long_description():
-    with open(os.path.join(ROOT, 'README.md'), encoding='utf-8') as f:
+    with io.open(os.path.join(ROOT, 'README.md'), encoding='utf-8') as f:
         markdown_txt = f.read()
     try:
         import pypandoc
