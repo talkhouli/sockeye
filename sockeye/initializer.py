@@ -17,7 +17,7 @@ from typing import Optional
 import mxnet as mx
 import numpy as np
 
-import sockeye.constants as C
+import constants as C
 
 logger = logging.getLogger(__name__)
 

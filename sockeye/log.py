@@ -141,7 +141,7 @@ def setup_main_logger(name: str, file_logging=True, console=True, path: Optional
 def log_sockeye_version(logger):
     from sockeye import __version__
     try:
-        from sockeye.git_version import git_hash
+        from git_version import git_hash
     except ImportError:
         git_hash = "unknown"
     logger.info("Sockeye version %s commit %s", __version__, git_hash)

@@ -16,8 +16,8 @@ from typing import Optional, List, Iterable  # NOQA pylint: disable=unused-impor
 
 import mxnet as mx
 
-from sockeye.config import Config
-from sockeye.layers import LayerNormalization
+from config import Config
+from layers import LayerNormalization
 import constants as C
 import utils
 
@@ -58,7 +58,6 @@ class RNNConfig(Config):
         self.residual = residual
         self.first_residual_layer = first_residual_layer
         self.forget_bias = forget_bias
-
 
 class SequentialRNNCellParallelInput(mx.rnn.SequentialRNNCell):
     """

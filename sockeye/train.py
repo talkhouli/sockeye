@@ -25,9 +25,9 @@ from typing import Optional, Dict, List, Tuple
 
 import mxnet as mx
 
-from sockeye.config import Config
-from sockeye.log import setup_main_logger
-from sockeye.utils import check_condition
+from config import Config
+from log import setup_main_logger
+from utils import check_condition
 import arguments
 import rnn_attention
 import constants as C
@@ -294,7 +294,8 @@ def create_data_iters(args: argparse.Namespace,
                                            sequence_limit=args.limit,
                                            alignment=os.path.abspath(args.alignment) if args.alignment else None,
                                            validation_alignment=os.path.abspath(
-                                            args.validation_alignment) if args.validation_alignment else None)
+                                            args.validation_alignment) if args.validation_alignment else None,
+                                           output_type=args.output_classes)
 
 
 def create_lr_scheduler(args: argparse.Namespace, resume_training: bool,
@@ -452,7 +453,7 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
                                                          layer_normalization=args.layer_normalization,
                                                          config_coverage=config_coverage,
                                                          num_heads=args.rnn_attention_mhdot_heads,
-                                                         alignment_bias=args.alignment is not None)
+                                                         alignment_bias=args.alignment_bias)
 
         _, decoder_rnn_dropout_inputs = args.rnn_dropout_inputs
         _, decoder_rnn_dropout_states = args.rnn_dropout_states
@@ -474,7 +475,9 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             state_init=args.rnn_decoder_state_init,
             context_gating=args.rnn_context_gating,
             layer_normalization=args.layer_normalization,
-            attention_in_upper_layers=args.rnn_attention_in_upper_layers)
+            attention_in_upper_layers=args.rnn_attention_in_upper_layers,
+            alignment_model=args.output_classes == C.ALIGNMENT_JUMP
+        )
 
     return config_decoder
 
@@ -538,7 +541,7 @@ def create_model_config(args: argparse.Namespace,
                                                   dropout=embed_dropout_target)
 
     config_loss = loss.LossConfig(name=args.loss,
-                                  vocab_size=vocab_target_size,
+                                  vocab_size=vocab_target_size if args.output_classes == C.WORDS else C.NUM_ALIGNMENT_JUMPS,
                                   normalization_type=args.loss_normalization_type,
                                   label_smoothing=args.label_smoothing)
 
@@ -552,6 +555,7 @@ def create_model_config(args: argparse.Namespace,
                                      config_encoder=config_encoder,
                                      config_decoder=config_decoder,
                                      config_loss=config_loss,
+                                     output_classes=args.output_classes,
                                      weight_tying=args.weight_tying,
                                      weight_tying_type=args.weight_tying_type if args.weight_tying else None,
                                      weight_normalization=args.weight_normalization)

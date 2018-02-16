@@ -10,7 +10,7 @@
 # an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
-from sockeye.convolution import ConvolutionBlock
+from convolution import ConvolutionBlock
 
 """
 Encoders for sequence-to-sequence models.
@@ -22,7 +22,7 @@ from typing import Callable, List, Optional, Tuple
 
 import mxnet as mx
 
-from sockeye.config import Config
+from config import Config
 import constants as C
 import rnn
 import convolution

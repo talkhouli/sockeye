@@ -20,7 +20,7 @@ import sys
 from typing import Iterable, Optional
 
 from contrib import sacrebleu
-from sockeye.log import setup_main_logger, log_sockeye_version
+from log import setup_main_logger, log_sockeye_version
 import arguments
 import chrf
 import constants as C

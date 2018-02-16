@@ -56,11 +56,18 @@ TRANSFORMER_TYPE = "transformer"
 CONVOLUTION_TYPE = "cnn"
 TRANSFORMER_WITH_CONV_EMBED_TYPE = "transformer-with-conv-embed"
 
+# output types
+ALIGNMENT_JUMP = "alignment-jump"
+WORDS = "words"
+
 # available encoders
 ENCODERS = [RNN_NAME, RNN_WITH_CONV_EMBED_NAME, TRANSFORMER_TYPE, TRANSFORMER_WITH_CONV_EMBED_TYPE, CONVOLUTION_TYPE]
 
 # available decoder
 DECODERS = [RNN_NAME, TRANSFORMER_TYPE, CONVOLUTION_TYPE]
+
+# output layer
+OUTPUT_CLASSES = [ALIGNMENT_JUMP, WORDS]
 
 # rnn types
 LSTM_TYPE = 'lstm'
@@ -109,6 +116,7 @@ RNN_DEC_INIT_AVG = "avg"
 RNN_DEC_INIT_CHOICES = [RNN_DEC_INIT_ZERO, RNN_DEC_INIT_LAST, RNN_DEC_INIT_AVG]
 
 # attention types
+ATT_ALIGNMENT = 'alignment' #does not compute attention, uses external alignment info instead
 ATT_BILINEAR = 'bilinear'
 ATT_DOT = 'dot'
 ATT_DOT_SCALED = 'dot_scaled'
@@ -117,7 +125,7 @@ ATT_FIXED = 'fixed'
 ATT_LOC = 'location'
 ATT_MLP = 'mlp'
 ATT_COV = "coverage"
-ATT_TYPES = [ATT_BILINEAR, ATT_DOT, ATT_DOT_SCALED, ATT_MH_DOT, ATT_FIXED, ATT_LOC, ATT_MLP, ATT_COV]
+ATT_TYPES = [ATT_BILINEAR, ATT_DOT, ATT_DOT_SCALED, ATT_MH_DOT, ATT_FIXED, ATT_LOC, ATT_MLP, ATT_COV, ATT_ALIGNMENT]
 
 # weight tying components
 WEIGHT_TYING_SRC='src'
@@ -157,6 +165,7 @@ SOURCE_LENGTH_NAME = "source_length"
 TARGET_NAME = "target"
 ALIGNMENT_NAME = "alignment"
 TARGET_LABEL_NAME = "target_label"
+ALIGNMENT_JUMP_LABEL_NAME = "alignment_jump_label"
 LEXICON_NAME = "lexicon"
 
 SOURCE_ENCODED_NAME = "encoded_source"
@@ -317,3 +326,8 @@ DEFAULT_NUM_STD_MAX_OUTPUT_LENGTH = 2
 
 LARGE_POSITIVE_VALUE = 99999999.
 LARGE_NEGATIVE_VALUE = -LARGE_POSITIVE_VALUE
+
+# Alignment-based Approach related
+NUM_ALIGNMENT_JUMPS=201 # -100:100
+MAX_JUMP=20
+MAX_COVERAGE=4

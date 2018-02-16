@@ -14,8 +14,8 @@
 import logging
 from math import sqrt
 from typing import List, Optional, Tuple
-import sockeye.constants as C
-from sockeye.utils import check_condition
+import constants as C
+from utils import check_condition
 
 logger = logging.getLogger(__name__)
 

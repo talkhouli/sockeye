@@ -15,6 +15,7 @@
 Code for inference/translation
 """
 import itertools
+import copy
 import logging
 import os
 from typing import Callable, Dict, List, NamedTuple, Optional, Tuple, Union, Set
@@ -77,7 +78,8 @@ class InferenceModel(model.SockeyeModel):
         self.softmax_temperature = softmax_temperature
         self.batch_size = batch_size
         self.context = context
-
+        self.alignment_based= self.config.config_data.alignment is not None
+        self.alignment_model = self.config.output_classes == C.ALIGNMENT_JUMP
         self._build_model_components()
 
         self.max_input_length, self.get_max_output_length = get_max_input_output_length([self],
@@ -219,6 +221,8 @@ class InferenceModel(model.SockeyeModel):
             # (batch_size, num_embed)
             target_embed_prev, _, _ = self.embedding_target.encode(data=target_prev, data_length=None, seq_len=1)
 
+            alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.alignment_based else None
+
             # decoder
             # target_decoded: (batch_size, decoder_depth)
             (target_decoded,
@@ -226,7 +230,8 @@ class InferenceModel(model.SockeyeModel):
              states) = self.decoder.decode_step(decode_step,
                                                 target_embed_prev,
                                                 source_encoded_seq_len,
-                                                *states)
+                                                *states,
+                                                alignment=alignment)
 
             if self.decoder_return_logit_inputs:
                 # skip output layer in graph
@@ -238,7 +243,7 @@ class InferenceModel(model.SockeyeModel):
                     logits /= self.softmax_temperature
                 outputs = mx.sym.softmax(data=logits, name=C.SOFTMAX_NAME)
 
-            data_names = [C.TARGET_NAME] + state_names
+            data_names = [C.TARGET_NAME] + state_names + [C.ALIGNMENT_NAME] if self.alignment_based else []
             label_names = []  # type: List[str]
             return mx.sym.Group([outputs, attention_probs] + states), data_names, label_names
 
@@ -275,7 +280,10 @@ class InferenceModel(model.SockeyeModel):
             self.decoder.state_shapes(self.batch_size * self.beam_size,
                                       target_max_length,
                                       self.encoder.get_encoded_seq_len(source_max_length),
-                                      self.encoder.get_num_hidden()))
+                                      self.encoder.get_num_hidden()) +
+            [mx.io.DataDesc(name=C.ALIGNMENT_NAME,
+                            shape=(self.batch_size * self.beam_size,1),
+                            layout="NT")] if self.alignment_based else [])
 
     def run_encoder(self,
                     source: mx.nd.NDArray,
@@ -304,20 +312,61 @@ class InferenceModel(model.SockeyeModel):
     def run_decoder(self,
                     prev_word: mx.nd.NDArray,
                     bucket_key: Tuple[int, int],
-                    model_state: 'ModelState') -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState']:
+                    model_state: 'ModelState',
+                    prev_alignment: mx.nd.NDArray = None,
+                    actual_source_length: int = -1) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
         Runs forward pass of the single-step decoder.
 
         :return: Decoder stack output (logit inputs or probability distribution), attention scores, updated model state.
         """
-        batch = mx.io.DataBatch(
-            data=[prev_word.as_in_context(self.context)] + model_state.states,
-            label=None,
-            bucket_key=bucket_key,
-            provide_data=self._get_decoder_data_shapes(bucket_key))
-        self.decoder_module.forward(data_batch=batch, is_train=False)
-        out, attention_probs, *model_state.states = self.decoder_module.get_outputs()
-        return out, attention_probs, model_state
+        #lexical alignment-based model: alignments hypothesized
+        #alignment model: previous alignments used
+        alignment_end_idx = actual_source_length if self.alignment_based and not self.alignment_model else 1
+        alignment_max_length = bucket_key[0] if self.alignment_based and not self.alignment_model else 1
+        alignment_shape = None
+        for e in self._get_decoder_data_shapes(bucket_key):
+            if e[0] == C.ALIGNMENT_NAME:
+                alignment_shape = e[1]
+                break
+
+        out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
+        for j in range(alignment_end_idx):
+            alignment = []
+            if self.alignment_based:
+                if self.alignment_model:
+                    alignment = [prev_alignment + 1] # shift by 1 due to BOS
+                else:
+                    #hypothesize alignment
+                    alignment = [j*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
+                    if alignment_result is None:
+                        alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
+                    alignment_result[j,:,:] = alignment[0]
+                    #alignment_result.append(copy.deepcopy(alignment))
+            batch = mx.io.DataBatch(
+                data=[prev_word.as_in_context(self.context)] + model_state.states + alignment,
+                label=None,
+                bucket_key=bucket_key,
+                provide_data=self._get_decoder_data_shapes(bucket_key))
+            self.decoder_module.forward(data_batch=batch, is_train=False)
+            out, attention_probs, *model_state.states = self.decoder_module.get_outputs()
+            if out_result is None:
+                out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')
+            if attention_probs_result is None:
+                attention_probs_result = mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(attention_probs.shape)),dtype='float32')
+            out_result[j,:,:] = out
+            attention_probs_result[j,:,:] = attention_probs
+            #out_result.append(copy.deepcopy(out))
+            #attention_probs_result.append(copy.deepcopy(attention_probs))
+            if model_state_result is None:
+                model_state_result = [mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(state.shape)),dtype=state.dtype) for state in model_state.states]
+            for state_idx in range(len(model_state.states)):
+                model_state_result[state_idx][j] = model_state.states[state_idx]
+            #model_state_result.append(copy.deepcopy(model_state))
+            #model_state_result.append([ copy.deepcopy(e) for e in model_state.states])
+
+
+        return out_result, attention_probs_result, ModelState(model_state_result), alignment_result
 
     @property
     def training_max_seq_len_source(self) -> int:
@@ -395,6 +444,8 @@ def load_models(context: mx.context.Context,
                                checkpoint=checkpoint,
                                decoder_return_logit_inputs=decoder_return_logit_inputs,
                                cache_output_layer_w_b=cache_output_layer_w_b)
+        #batching disabled for alignment-based models for now
+        assert not model.alignment_based or batch_size ==1
         models.append(model)
 
     utils.check_condition(all(set(vocab.items()) == set(source_vocabs[0].items()) for vocab in source_vocabs),
@@ -502,6 +553,7 @@ TranslatorOutput = NamedTuple('TranslatorOutput', [
     ('tokens', List[str]),
     ('attention_matrix', np.ndarray),
     ('score', float),
+    ('coverage',np.ndarray)
 ])
 """
 Output structure from Translator.
@@ -517,7 +569,9 @@ TokenIds = List[int]
 Translation = NamedTuple('Translation', [
     ('target_ids', TokenIds),
     ('attention_matrix', np.ndarray),
-    ('score', float)
+    ('score', float),
+    ('coverage', np.ndarray),
+    ('source',np.ndarray)
 ])
 
 TranslatedChunk = NamedTuple('TranslatedChunk', [
@@ -542,11 +596,17 @@ class ModelState:
     def __init__(self, states: List[mx.nd.NDArray]) -> None:
         self.states = states
 
-    def sort_state(self, best_hyp_indices: mx.nd.NDArray):
+    def sort_state(self, best_hyp_indices: mx.nd.NDArray, best_hyp_pos_indices: mx.nd.NDArray = None):
         """
         Sorts states according to k-best order from last step in beam search.
         """
-        self.states = [mx.nd.take(ds, best_hyp_indices) for ds in self.states]
+        #TODO (Tamer) is there a way to do mulitple indexing in mxnet without resorting to numpy?
+        pos_indices =  np.array([0]) if self.states[0].shape[0] == 1 or best_hyp_pos_indices is None \
+                                     else   best_hyp_pos_indices.asnumpy()
+        for idx,state in enumerate(self.states):
+            state_np = state.asnumpy()
+            self.states[idx] = mx.nd.array(state_np[pos_indices, best_hyp_indices.asnumpy()], state.context)
+        #self.states = [mx.nd.take(ds, best_hyp_indices) for ds in self.states]
 
 
 class LengthPenalty:
@@ -655,12 +715,16 @@ class Translator:
                  models: List[InferenceModel],
                  vocab_source: Dict[str, int],
                  vocab_target: Dict[str, int],
-                 restrict_lexicon: Optional[lexicon.TopKLexicon] = None) -> None:
+                 restrict_lexicon: Optional[lexicon.TopKLexicon] = None,
+                 lex_weight: float = 1.,
+                 align_weight: float = 0.
+                 ) -> None:
         self.context = context
         self.length_penalty = length_penalty
         self.vocab_source = vocab_source
         self.vocab_target = vocab_target
         self.vocab_target_inv = vocab.reverse_vocab(self.vocab_target)
+        self.vocab_source_inv = vocab.reverse_vocab(self.vocab_source)
         self.restrict_lexicon = restrict_lexicon
         self.start_id = self.vocab_target[C.BOS_SYMBOL]
         self.stop_ids = {self.vocab_target[C.EOS_SYMBOL], C.PAD_ID}  # type: Set[int]
@@ -668,6 +732,8 @@ class Translator:
         self.interpolation_func = self._get_interpolation_func(ensemble_mode)
         self.beam_size = self.models[0].beam_size
         self.batch_size = self.models[0].batch_size
+        self.lex_weight = lex_weight
+        self.align_weight = align_weight
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -736,7 +802,8 @@ class Translator:
             if len(trans_input.tokens) == 0:
                 empty_translation = Translation(target_ids=[],
                                                 attention_matrix=np.asarray([[0]]),
-                                                score=-np.inf)
+                                                score=-np.inf,
+                                                coverage=np.asarray([]))
                 translated_chunks.append(TranslatedChunk(id=input_idx,
                                                          chunk_id=0,
                                                          translation=empty_translation))
@@ -761,7 +828,7 @@ class Translator:
             if rest > 0:
                 logger.debug("Extending the last batch to the full batch size (%d)", self.batch_size)
                 batch = batch + [batch[0]] * rest
-            batch_translations = self.translate_nd(*self._get_inference_input(batch))
+            batch_translations = self.translate_nd(*self._get_inference_input(batch),batch)
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
@@ -792,7 +859,8 @@ class Translator:
         :param sequences: List of lists of input tokens.
         :return NDArray of source ids and bucket key.
         """
-        bucket_key = data_io.get_bucket(max(len(tokens) for tokens in sequences), self.buckets_source)
+        #+1 for EOS
+        bucket_key = data_io.get_bucket(max(len(tokens)+1 for tokens in sequences), self.buckets_source)
 
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
@@ -800,7 +868,11 @@ class Translator:
             ids = data_io.tokens2ids(tokens, self.vocab_source)
             for i, wid in enumerate(ids):
                 source[j, i] = wid
-        return source, bucket_key
+            source[j,len(tokens)] = self.vocab_source[C.EOS_SYMBOL]
+            #source_length needed for alignment-based models, where batch_size=len(sequences)=1
+            source_length = len(tokens) + 1 # +1 for EOS
+
+        return source, bucket_key, source_length
 
     def _make_result(self,
                      trans_input: TranslatorInput,
@@ -818,16 +890,19 @@ class Translator:
         attention_matrix = translation.attention_matrix[1:, :]
 
         target_tokens = [self.vocab_target_inv[target_id] for target_id in target_ids]
+        target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])] if token == C.UNK_SYMBOL else token  for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
             target_token for target_id, target_token in zip(target_ids, target_tokens) if
             target_id not in self.stop_ids)
         attention_matrix = attention_matrix[:, :len(trans_input.tokens)]
+        coverage = translation.coverage[:]
 
         return TranslatorOutput(id=trans_input.id,
                                 translation=target_string,
                                 tokens=target_tokens,
                                 attention_matrix=attention_matrix,
-                                score=translation.score)
+                                score=translation.score,
+                                coverage=coverage)
 
     def _concat_translations(self, translations: List[Translation]) -> Translation:
         """
@@ -840,16 +915,20 @@ class Translator:
 
     def translate_nd(self,
                      source: mx.nd.NDArray,
-                     source_length: int) -> List[Translation]:
+                     source_length: int,
+                     actual_source_length: int,
+                     original_source: List[List[str]]) -> List[Translation]:
         """
         Translates source of source_length, given a bucket_key.
 
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Bucket key.
+        :param actual_source_length: source_length_without padding
+        :param original_source: original source words before vocabulary mappying (batch_size,)
 
         :return: Sequence of translations.
         """
-        return self._get_best_from_beam(*self._beam_search(source, source_length))
+        return self._get_best_from_beam(*self._beam_search(source, source_length, actual_source_length),original_source)
 
     def _encode(self, sources: mx.nd.NDArray, source_length: int) -> List[ModelState]:
         """
@@ -859,16 +938,23 @@ class Translator:
         :param source_length: Bucket key.
         :return: List of ModelStates.
         """
-        return [model.run_encoder(sources, source_length) for model in self.models]
+        #add bos and remove last element to keep the length
+        bos_sources = mx.ndarray.concat(mx.ndarray.array([[self.vocab_source[C.BOS_SYMBOL]]] *self.batch_size,
+                                                         ctx=sources.context)
+                                        , sources[:,:sources.shape[1]-1], dim=1)
+        return [model.run_encoder( bos_sources if model.alignment_model else sources, source_length ) for model in self.models]
 
     def _decode_step(self,
                      sequences: mx.nd.NDArray,
                      step: int,
                      source_length: int,
+                     actual_soruce_length: int,
                      max_output_length: int,
                      states: List[ModelState],
                      models_output_layer_w: List[mx.nd.NDArray],
-                     models_output_layer_b: List[mx.nd.NDArray]) \
+                     models_output_layer_b: List[mx.nd.NDArray],
+                     prev_alignment: mx.nd.NDArray,
+                     coverage_vector: mx.nd.NDArray) \
             -> Tuple[mx.nd.NDArray, mx.nd.NDArray, List[ModelState]]:
         """
         Returns decoder predictions (combined from all models), attention scores, and updated states.
@@ -876,10 +962,13 @@ class Translator:
         :param sequences: Sequences of current hypotheses. Shape: (batch_size * beam_size, max_output_length).
         :param step: Beam search iteration.
         :param source_length: Length of the input sequence.
+        :param actual_soruce_length: actual source length without padding
         :param max_output_length: Maximum output length.
         :param states: List of model states.
         :param models_output_layer_w: Custom model weights for logit computation (empty for none).
         :param models_output_layer_b: Custom model biases for logit computation (empty for none).
+        :param prev_alignment: last aligned source positions
+        :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
         :return: (probs, attention scores, list of model states)
         """
         bucket_key = (source_length, step)
@@ -887,9 +976,13 @@ class Translator:
 
         model_probs, model_attention_probs, model_states = [], [], []
         # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
+        #lexical models
         for model, out_w, out_b, state in itertools.zip_longest(
                 self.models, models_output_layer_w, models_output_layer_b, states):
-            decoder_outputs, attention_probs, state = model.run_decoder(prev_word, bucket_key, state)
+            #alignment models evaluated later
+            if model.alignment_model:
+                continue
+            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key, state, actual_source_length=actual_soruce_length)
             # Compute logits and softmax with restricted vocabulary
             if self.restrict_lexicon:
                 logits = model.output_layer(decoder_outputs, out_w, out_b)
@@ -900,12 +993,128 @@ class Translator:
             model_probs.append(probs)
             model_attention_probs.append(attention_probs)
             model_states.append(state)
-        neg_logprobs, attention_probs = self._combine_predictions(model_probs, model_attention_probs)
+
+        neg_logprobs , attention_probs = self._combine_predictions_per_position(model_probs,model_attention_probs)
+
+        #alignment models
+        has_align_model = False
+        align_model_probs , align_model_states= [] , []
+        for model, state in itertools.zip_longest(self.models, states):
+            # alignment models evaluated elsewhere
+            if not model.alignment_model:
+                continue
+            has_align_model = True
+            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment, actual_source_length=actual_soruce_length)
+            align_model_probs.append(probs)
+            model_states.append(state)
+
+        if has_align_model:
+            align_neg_logprobs, _ = self._combine_predictions_per_position(align_model_probs) # Alignment mo
+            neg_logprobs = self._combine_lex_align_scores(align_neg_logprobs, neg_logprobs,
+                                                          prev_alignment, new_alignment, coverage_vector,
+                                                          actual_soruce_length)
         return neg_logprobs, attention_probs, model_states
+
+    def _combine_lex_align_scores(self,
+                                align_neg_logprobs: mx.nd.NDArray,
+                                lex_neg_logprobs: mx.nd.NDArray,
+                                prev_alignment: mx.nd.NDArray,
+                                new_alignment: mx.nd.NDArray,
+                                coverage_vector: mx.ndarray.NDArray,
+                                actual_soruce_length: int) -> mx.nd.NDArray:
+
+
+        """
+        Returns combined lexical and alignment negative log scores
+
+        :param align_neg_logprobs:  Shape(source_length, beam_size, C.NUM_ALIGNMENT_JUMPS).
+        :param lex_neg_logprobs: List of Shape(1, beam_size, target_vocab_size).
+        :param prev_alignment: Shape(beam_size,1)
+        :param new_alignment: Shape(source_length, beam_size, source_length)
+        :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
+        :param actual_soruce_length: actual source length without padding
+        :return: Combined weighted negative log probabilities
+        """
+        combined_result = lex_neg_logprobs
+        for j in range(new_alignment.shape[0]):
+            disallowed_alignments = self._invalid_alignments(prev_alignment,
+                                                            new_alignment[j][0],
+                                                            coverage_vector)
+            alignment_jump_idx = (C.NUM_ALIGNMENT_JUMPS-1)/2 + new_alignment[j][0]-prev_alignment
+            #jump_scores = mx.ndarray.batch_take(align_neg_logprobs[0],alignment_jump_idx)
+            jump_scores = mx.ndarray.pick(align_neg_logprobs[0], alignment_jump_idx, keepdims=True)
+
+            #combined_result[j] = self.lex_weight * lex_neg_logprobs[j] + self.align_weight * jump_scores
+            combined_result[j] = mx.nd.where(mx.nd.split(disallowed_alignments,num_outputs=1,squeeze_axis=1),
+                                             mx.nd.ones(shape=lex_neg_logprobs[j].shape,ctx=self.context)*np.inf,
+                                             self.lex_weight * lex_neg_logprobs[j] + self.align_weight * jump_scores)
+            #enforce sentence-end to sentence-end alignment
+            if j != actual_soruce_length -1 :
+                combined_result[j,:,self.vocab_target[C.EOS_SYMBOL]] = np.inf
+
+        return combined_result
+
+    def _invalid_alignments(self,
+                            prev_alignment: mx.nd.NDArray,
+                            new_alignment: mx.nd.NDArray,
+                            coverage_vector: mx.nd.NDArray):
+        """
+        Returns List of invalid alignments that violate max jump and coverage constraints
+
+        :param prev_alignment: Shape(beam_size,1)
+        :param new_alignment: Shape(1,)
+        :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
+        :return: List of invalid alignment indices within the beam
+        """
+
+        max_jump = C.MAX_JUMP
+        jump = new_alignment - prev_alignment
+        #coverage_violation = coverage_vector + mx.ndarray.one_hot(new_alignment*mx.ndarray.ones(ctx=self.context,
+        #                                                                                        shape=(coverage_vector.shape[0])
+        #                                                                                        ,dtype='int32'),dtype='int32',
+        #                                                          depth=10)
+        coverage_slice = mx.ndarray.pick(coverage_vector, mx.ndarray.ones(shape=(self.beam_size*self.batch_size,1), ctx=self.context,
+                                                         dtype='int32') * new_alignment,
+                                         keepdims=True)
+        coverage_violation = coverage_slice + 1> C.MAX_COVERAGE
+        ret = mx.nd.where((jump > max_jump) + (jump < -max_jump) + coverage_violation > 0,
+                          mx.nd.ones(ctx=self.context,shape=(self.beam_size*self.batch_size,1)),
+                          mx.nd.zeros(ctx=self.context,shape=(self.beam_size*self.batch_size,1)))
+        return ret
+
+    def _combine_predictions_per_position(self,
+                             probs: List[List[mx.nd.NDArray]],
+                             attention_probs: List[List[mx.nd.NDArray]] = None) -> Tuple[mx.nd.NDArray, mx.nd.NDArray]:
+        """
+        Returns combined position-dependent predictions of models as negative log probabilities and averaged attention prob scores.
+
+        :param probs: Model List of Source Position List of Shape(beam_size, target_vocab_size).
+        :param attention_probs: Model List of Position List of Shape(beam_size, bucket_key).
+        :return: Model-combined per-position negative log probabilities, averaged attention scores.
+        """
+        combined_neg_logprobs, combined_attention_probs = None, None
+        for j in range(probs[0].shape[0]):
+            model_probs_j = [probs[m][j] for m in range(len(probs))]
+            model_attention_probs_j = None
+            if attention_probs is not None:
+                model_attention_probs_j = [attention_probs[m][j] for m in range(len(attention_probs))]
+            combined_neg_logprobs_j, combined_attention_probs_j = self._combine_predictions(model_probs_j,
+                                                                                                    model_attention_probs_j)
+            if combined_neg_logprobs is None:
+                combined_neg_logprobs = mx.ndarray.zeros(ctx=self.context,shape=(probs[0].shape[0],combined_neg_logprobs_j.shape[0],
+                                                                               combined_neg_logprobs_j.shape[1]),dtype='float32')
+            combined_neg_logprobs[j, :, :] = combined_neg_logprobs_j
+            if combined_attention_probs_j is not None:
+                if combined_attention_probs is None:
+                    combined_attention_probs = mx.ndarray.zeros(ctx=self.context,shape=(probs[0].shape[0],combined_attention_probs_j.shape[0],
+                                                                                        combined_attention_probs_j.shape[1]),dtype='float32')
+                combined_attention_probs[j,:,:] = combined_attention_probs_j
+
+        return combined_neg_logprobs, combined_attention_probs
 
     def _combine_predictions(self,
                              probs: List[mx.nd.NDArray],
-                             attention_probs: List[mx.nd.NDArray]) -> Tuple[mx.nd.NDArray, mx.nd.NDArray]:
+                             attention_probs: List[mx.nd.NDArray] = None) -> Tuple[mx.nd.NDArray, mx.nd.NDArray]:
         """
         Returns combined predictions of models as negative log probabilities and averaged attention prob scores.
 
@@ -914,7 +1123,9 @@ class Translator:
         :return: Combined negative log probabilities, averaged attention scores.
         """
         # average attention prob scores. TODO: is there a smarter way to do this?
-        attention_prob_score = utils.average_arrays(attention_probs)
+        attention_prob_score = None
+        if attention_probs is not None:
+            attention_prob_score = utils.average_arrays(attention_probs)
 
         # combine model predictions and convert to neg log probs
         if len(self.models) == 1:
@@ -925,12 +1136,14 @@ class Translator:
 
     def _beam_search(self,
                      source: mx.nd.NDArray,
-                     source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray]:
+                     source_length: int,
+                     actual_source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray]:
         """
         Translates multiple sentences using beam search.
 
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Max source length.
+        :param actual_source_length: Source length without padding
         :return List of lists of word ids, list of attentions, array of accumulated length-normalized
                 negative log-probs.
         """
@@ -959,14 +1172,20 @@ class Translator:
 
         # best_hyp_indices: row indices of smallest scores (ascending).
         best_hyp_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
+        # best_hyp_pos_indices: related to alignment-based NMT: source position indices of smallest scores (ascending).
+        best_hyp_pos_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
         # best_word_indices: column indices of smallest scores (ascending).
         best_word_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
         # scores_accumulated: chosen smallest scores in scores (ascending).
-        scores_accumulated = mx.nd.zeros((self.batch_size * self.beam_size, 1), ctx=self.context)
+        scores_accumulated = mx.nd.zeros((self.batch_size * self.beam_size, 1, 1), ctx=self.context)
+        # coverage vectors
+        coverage_vector = mx.nd.zeros((self.batch_size * self.beam_size,source_length), ctx=self.context, dtype='int32')
 
         best_hyp_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
+        best_hyp_pos_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
         best_word_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
         scores_accumulated_np = np.empty((self.batch_size * self.beam_size,))
+        attention_scores_np = np.empty((self.batch_size * self.beam_size,encoded_source_length,encoded_source_length))
 
         # reset all padding distribution cells to np.inf
         self.pad_dist[:] = np.inf
@@ -976,6 +1195,9 @@ class Translator:
         models_output_layer_w = list()
         models_output_layer_b = list()
         pad_dist = self.pad_dist
+        #TODO (Tamer) remove instate from init?
+        pad_dist = pad_dist = mx.nd.full((self.batch_size * self.beam_size, source_length, len(self.vocab_target)),
+                                  val=np.inf, ctx=self.context)
         vocab_slice_ids = None  # type: mx.nd.NDArray
         if self.restrict_lexicon:
             # TODO: See note in method about migrating to pure MXNet when set operations are supported.
@@ -993,7 +1215,7 @@ class Translator:
                                                mx.nd.full((n,), val=self.vocab_target[C.EOS_SYMBOL], ctx=self.context),
                                                dim=0)
 
-            pad_dist = mx.nd.full((self.batch_size * self.beam_size, vocab_slice_ids.shape[0]),
+            pad_dist = mx.nd.full((self.batch_size * self.beam_size, 1, vocab_slice_ids.shape[0]),
                                   val=np.inf, ctx=self.context)
             for m in self.models:
                 models_output_layer_w.append(m.output_layer_w.take(vocab_slice_ids))
@@ -1002,6 +1224,10 @@ class Translator:
         # (0) encode source sentence, returns a list
         model_states = self._encode(source, source_length)
 
+        #initial alignments set to -1
+        alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,1),dtype='int32') -1
+
+        logger.info("source length: %d",actual_source_length)
         for t in range(1, max_output_length):
 
             # (1) obtain next predictions and advance models' state
@@ -1010,20 +1236,33 @@ class Translator:
             scores, attention_scores, model_states = self._decode_step(sequences,
                                                                        t,
                                                                        source_length,
+                                                                       actual_source_length,
                                                                        max_output_length,
                                                                        model_states,
                                                                        models_output_layer_w,
-                                                                       models_output_layer_b)
+                                                                       models_output_layer_b,
+                                                                       prev_alignment=alignment,
+                                                                       coverage_vector=coverage_vector)
+            scores = mx.ndarray.swapaxes(scores,0,1)
+            attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
+            #alignment_np = np.swapaxes(alignment.asnumpy(),0,1)
+            #scores = scores[0]
+            #attention_scores = attention_scores[0]
+            #TODO: FOR DEBUGGING ONLY!!!!ms
+            #model_states[0] = model_states[0][0]
+            #model_states[1] = model_states[1][0]
+            #alignment = alignment[0]
 
             # (2) compute length-normalized accumulated scores in place
             if t == 1 and self.batch_size == 1:  # only one hypothesis at t==1
                 scores = scores[:1] / self.length_penalty(lengths[:1])
             else:
                 # renormalize scores by length ...
-                scores = (scores + scores_accumulated * self.length_penalty(lengths - 1)) / self.length_penalty(lengths)
+                scores = (scores + scores_accumulated * mx.nd.expand_dims(self.length_penalty(lengths - 1),axis=1)) / mx.nd.expand_dims(self.length_penalty(lengths),axis=1)
                 # ... but not for finished hyps.
                 # their predicted distribution is set to their accumulated scores at C.PAD_ID.
-                pad_dist[:, C.PAD_ID] = scores_accumulated
+                #TODO (Tamer) Verify!
+                pad_dist[:, :,C.PAD_ID] = scores_accumulated[:,:,0].broadcast_to((pad_dist.shape[0],pad_dist.shape[1]))
                 # this is equivalent to doing this in numpy:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
@@ -1036,15 +1275,16 @@ class Translator:
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
                 sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
-                (best_hyp_indices_np[rows], best_word_indices_np[rows]), \
+                (best_hyp_indices_np[rows], best_hyp_pos_indices_np[rows] , best_word_indices_np[rows]), \
                     scores_accumulated_np[rows] = utils.smallest_k(sliced_scores, self.beam_size, t == 1)
                 # offsetting since the returned smallest_k() indices were slice-relative
                 best_hyp_indices_np[rows] += rows.start
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
-            scores_accumulated[:] = np.expand_dims(scores_accumulated_np, axis=1)
+            scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
             # Map from restricted to full vocab ids if needed
             if self.restrict_lexicon:
                 best_word_indices[:] = vocab_slice_ids.take(best_word_indices)
@@ -1053,31 +1293,50 @@ class Translator:
             sequences = mx.nd.take(sequences, best_hyp_indices)
             lengths = mx.nd.take(lengths, best_hyp_indices)
             finished = mx.nd.take(finished, best_hyp_indices)
-            attention_scores = mx.nd.take(attention_scores, best_hyp_indices)
+            #attention_scores = mx.nd.take(attention_scores, best_hyp_indices)
+            attention_scores_np = attention_scores.asnumpy()
             attentions = mx.nd.take(attentions, best_hyp_indices)
 
             # (5) update best hypotheses, their attention lists and lengths (only for non-finished hyps)
             # pylint: disable=unsupported-assignment-operation
             sequences[:, t] = best_word_indices
-            attentions[:, t, :] = attention_scores
+            attentions[:, t, :] = attention_scores_np[best_hyp_indices_np,best_hyp_pos_indices_np,:]
+            #attentions[:, t, :] = attention_scores
             lengths += mx.nd.cast(1 - mx.nd.expand_dims(finished, axis=1), dtype='float32')
 
-            # (6) determine which hypotheses in the beam are now finished
+            #(6) update coverage vector of active hypotheses
+            coverage_vector = mx.nd.take(coverage_vector,best_hyp_indices) +\
+                              mx.nd.where(finished,
+                                          mx.nd.zeros(ctx=self.context,dtype='int32',shape=(self.beam_size* self.batch_size,source_length)),
+                                          mx.ndarray.one_hot(best_hyp_pos_indices, depth=source_length, dtype='int32'))
+
+            # (7) determine which hypotheses in the beam are now finished
             finished = ((best_word_indices == C.PAD_ID) + (best_word_indices == self.vocab_target[C.EOS_SYMBOL]))
             if mx.nd.sum(finished).asscalar() == self.batch_size * self.beam_size:  # all finished
                 break
 
-            # (7) update models' state with winning hypotheses (ascending)
+            # (8) update models' state with winning hypotheses (ascending)
             for ms in model_states:
-                ms.sort_state(best_hyp_indices)
+                ms.sort_state(best_hyp_indices,best_hyp_pos_indices)
 
-        return sequences, attentions, scores_accumulated, lengths
+            #(9) update previous alignment
+            alignment[:,0] =  best_hyp_pos_indices
+
+            #DEBUGGING
+            logger.info("coverage vector[t=%d]: %s",t,
+                    '[' + ' '.join([str(coverage_vector.asnumpy()[0][i]) for i in range(len(coverage_vector.asnumpy()[0]))]) + ']')
+
+
+
+        return sequences, attentions, scores_accumulated[:,:,0], lengths, coverage_vector
 
     def _get_best_from_beam(self,
                             sequences: mx.nd.NDArray,
                             attention_lists: mx.nd.NDArray,
                             accumulated_scores: mx.nd.NDArray,
-                            lengths: mx.nd.NDArray) -> List[Translation]:
+                            lengths: mx.nd.NDArray,
+                            coverage_vector: mx.nd.NDArray,
+                            source: List[List[str]]) -> List[Translation]:
         """
         Return the best (aka top) entry from the n-best list.
 
@@ -1085,11 +1344,15 @@ class Translator:
         :param attention_lists: Array of attentions over source words.
                                 Shape: (batch_size * self.beam_size, max_output_length, encoded_source_length).
         :param accumulated_scores: Array of length-normalized negative log-probs.
+        :param lengths translation lengths
+        :param coverage_vector final source coverage (batch_size*beam_size,encoded_source_length)
+        :param source: batch of source sequenecs
         :return: Top sequence, top attention matrix, top accumulated score (length-normalized
                  negative log-probs) and length.
         """
         utils.check_condition(sequences.shape[0] == attention_lists.shape[0] \
-                              == accumulated_scores.shape[0] == lengths.shape[0], "Shape mismatch")
+                              == accumulated_scores.shape[0] == lengths.shape[0] \
+                              == coverage_vector.shape[0], "Shape mismatch")
         # sequences & accumulated scores are in latest 'k-best order', thus 0th element is best
         best = 0
         result = []
@@ -1100,5 +1363,9 @@ class Translator:
             # attention_matrix: (target_seq_len, source_seq_len)
             attention_matrix = np.stack(attention_lists[idx].asnumpy()[:length, :], axis=0)
             score = accumulated_scores[idx].asscalar()
-            result.append(Translation(sequence, attention_matrix, score))
+            coverage = coverage_vector[idx].asnumpy()
+            result.append(Translation(sequence, attention_matrix, score, coverage,source[sent]))
+            logger.info("max attention: %s. coverage vector: %s",
+                        '[' + ' '.join([str(np.argmax(attention_matrix[j+1])) for j in range(length-1)]) + ']',
+                        '[' + ' '.join([str(coverage[i]) for i in range(len(coverage))]) + ']')
         return result

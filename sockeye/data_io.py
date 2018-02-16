@@ -26,7 +26,7 @@ from typing import Any, Dict, Iterator, Iterable, List, NamedTuple, Optional, Tu
 import mxnet as mx
 import numpy as np
 
-from sockeye.utils import check_condition
+from utils import check_condition
 import config
 import constants as C
 
@@ -129,7 +129,8 @@ def get_training_data_iters(source: str, target: str,
                             bucket_width: int,
                             sequence_limit: Optional[int] = None,
                             alignment: str = None,
-                            validation_alignment: str = None) -> Tuple['ParallelBucketSentenceIter',
+                            validation_alignment: str = None,
+                            output_type: str = C.WORDS) -> Tuple['ParallelBucketSentenceIter',
                                                                            'ParallelBucketSentenceIter',
                                                                            'DataConfig']:
     """
@@ -156,9 +157,14 @@ def get_training_data_iters(source: str, target: str,
     """
     logger.info("Creating train data iterator")
     # streams id-coded sentences from disk
-    train_source_sentences = SentenceReader(source, vocab_source, add_bos=False, limit=sequence_limit)
+    train_source_sentences = SentenceReader(source, vocab_source, add_bos=output_type != C.WORDS,
+                                            add_eos=True,
+                                            limit=sequence_limit)
     train_target_sentences = SentenceReader(target, vocab_target, add_bos=True, limit=sequence_limit)
-    train_alignment_sentences = AlignmentReader(alignment, add_bos=True, limit=sequence_limit) if alignment is not None else []
+    train_alignment_sentences = AlignmentReader(alignment, add_bos=output_type != C.WORDS,
+                                                add_eos=True,
+                                                limit=sequence_limit,
+                                                source_lengths=[len(s) for s in train_source_sentences]) if alignment is not None else []
 
     # reads the id-coded sentences from disk once
     lr_mean, lr_std = length_statistics(train_source_sentences, train_target_sentences)
@@ -185,13 +191,20 @@ def get_training_data_iters(source: str, target: str,
                                             C.PAD_ID,
                                             vocab_target[C.UNK_SYMBOL],
                                             train_alignment_sentences,
+                                            label_name=C.TARGET_LABEL_NAME if output_type == C.WORDS else C.ALIGNMENT_JUMP_LABEL_NAME,
                                             bucket_batch_sizes=None,
-                                            fill_up=fill_up)
+                                            fill_up=fill_up,
+                                            output_type=output_type)
 
     logger.info("Creating validation data iterator")
-    val_source_sentences = SentenceReader(validation_source, vocab_source, add_bos=False, limit=None)
+    val_source_sentences = SentenceReader(validation_source, vocab_source, add_bos=output_type !=  C.WORDS,
+                                          add_eos=True,
+                                          limit=None)
     val_target_sentences = SentenceReader(validation_target, vocab_target, add_bos=True, limit=None)
-    val_alignment_sentences = AlignmentReader(validation_alignment, add_bos=True, limit=sequence_limit) if alignment is not None else []
+    val_alignment_sentences = AlignmentReader(validation_alignment, add_bos=output_type !=  C.WORDS,
+                                              add_eos=True,
+                                              limit=sequence_limit,
+                                              source_lengths=[len(s) for s in val_source_sentences]) if alignment is not None else []
 
     val_iter = ParallelBucketSentenceIter(val_source_sentences,
                                           val_target_sentences,
@@ -203,8 +216,10 @@ def get_training_data_iters(source: str, target: str,
                                           C.PAD_ID,
                                           vocab_target[C.UNK_SYMBOL],
                                           val_alignment_sentences,
+                                          label_name=C.TARGET_LABEL_NAME if output_type == C.WORDS else C.ALIGNMENT_JUMP_LABEL_NAME,
                                           bucket_batch_sizes=train_iter.bucket_batch_sizes,
-                                          fill_up=fill_up)
+                                          fill_up=fill_up,
+                                          output_type=output_type)
 
     check_condition(val_source_sentences.is_done() and val_target_sentences.is_done(),
                     "Different number of lines in source and target validation data.")
@@ -353,10 +368,12 @@ class SentenceReader(Iterator):
     :param limit: Read limit.
     """
 
-    def __init__(self, path: str, vocab: Dict[str, int], add_bos: bool = False, limit: Optional[int] = None) -> None:
+    def __init__(self, path: str, vocab: Dict[str, int], add_bos: bool = False,
+                 add_eos:bool = False, limit: Optional[int] = None) -> None:
         self.path = path
         self.vocab = vocab
         self.add_bos = add_bos
+        self.add_eos=add_eos
         self.limit = limit
         assert C.UNK_SYMBOL in vocab
         assert C.UNK_SYMBOL in vocab
@@ -384,6 +401,9 @@ class SentenceReader(Iterator):
         if self.add_bos:
             sentence.insert(0, self.vocab[C.BOS_SYMBOL])
 
+        if self.add_eos:
+            sentence.append(self.vocab[C.EOS_SYMBOL])
+
         if not self._iterated_once:
             self.count += 1
 
@@ -409,14 +429,18 @@ class AlignmentReader(Iterator):
     :param limit: Read limit.
     """
 
-    def __init__(self, path: str, add_bos: bool = False, limit: Optional[int] = None) -> None:
+    def __init__(self, path: str, add_bos: bool = False, add_eos:bool = False,
+                 limit: Optional[int] = None, source_lengths: List[int] = None) -> None:
         self.path = path
         self.add_bos = add_bos
+        self.add_eos = add_eos
         self.limit = limit
         self._iter = None  # type: Optional[Iterator]
         self._iterated_once = False
         self.count = 0
         self._next = None
+        self.source_lengths = source_lengths
+        self.last_idx = 0
 
     def __iter__(self):
         assert self._next is None, "Can not iterate multiple times simultaneously."
@@ -433,6 +457,11 @@ class AlignmentReader(Iterator):
         if self.add_bos:
             alignment = [i+1 if i != -1 else -1 for i in alignment]
             alignment.insert(0,0)
+
+        if self.add_eos:
+            alignment.append(self.source_lengths[self.last_idx]-1)
+
+        self.last_idx += 1
 
         if not self._iterated_once:
             self.count += 1
@@ -528,6 +557,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                  alignment: Iterable[List[int]] = [],
                  bucket_batch_sizes: Optional[List[BucketBatchSize]] = None,
                  fill_up: Optional[str] = None,
+                 output_type: str = C.WORDS,
                  source_data_name=C.SOURCE_NAME,
                  target_data_name=C.TARGET_NAME,
                  alignment_data_name=C.ALIGNMENT_NAME,
@@ -550,6 +580,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.alignment_data_name = alignment_data_name
         self.label_name = label_name
         self.fill_up = fill_up
+        self.output_type=output_type
 
         self.data_source = [[] for _ in self.buckets]  # type: ignore
         self.data_target = [[] for _ in self.buckets]  # type: ignore
@@ -658,16 +689,25 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             # with the EOS symbol here sentence-wise and not per-batch due to variable sequence length within a batch.
             # Once MXNet allows item assignments given a list of indices (probably MXNet 0.13): e.g a[[0,1,5,2]] = x,
             # we can try again to compute the label sequence on the fly in next().
-            buff_label = np.full((buck[1],), self.pad_id, dtype=self.dtype)
             buff_source[:source_len] = source
             buff_target[:target_len] = target
-            buff_label[:len(target)] = target[1:] + [self.eos_id]
+            # using self.pad_id also for the alignment model. Since self.pad_id=0 means jump=-100, this should not
+            # make a real difference
+            buff_label = np.full((buck[1],), self.pad_id, dtype=self.dtype)
+            if self.output_type == C.WORDS:
+                buff_label[:len(target)] = target[1:] + [self.eos_id]
+            else:
+
+                offset = (C.NUM_ALIGNMENT_JUMPS-1)/2
+                buff_label[:len(target)] = [offset + alignment[i] - alignment[i-1] for i in range(1,len(target)+1) ]
+                                           #+ [offset + len(source)-alignment[len(target)-1]]
+
             self.data_source[buck_idx].append(buff_source)
             self.data_target[buck_idx].append(buff_target)
             self.data_label[buck_idx].append(buff_label)
             self.data_target_average_len[buck_idx] += target_len
             if alignment is not None:
-                buff_alignment = np.full((buck[1],), self.pad_id, dtype=self.dtype)
+                buff_alignment = np.full((buck[1]+1,), self.pad_id, dtype=self.dtype)
                 buff_alignment[:len(alignment)] = alignment
                 self.data_alignment[buck_idx].append(buff_alignment)
 

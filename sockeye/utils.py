@@ -32,9 +32,9 @@ from typing import Mapping, NamedTuple, Any, List, Iterator, Iterable, Set, Text
 import mxnet as mx
 import numpy as np
 
-import sockeye.constants as C
+import constants as C
 from sockeye import __version__
-from sockeye.log import log_sockeye_version, log_mxnet_version
+from log import log_sockeye_version, log_mxnet_version
 
 logger = logging.getLogger(__name__)
 
@@ -727,3 +727,23 @@ def grouper(iterable: Iterable, size: int) -> Iterable:
         if not chunk:
             return
         yield chunk
+
+def debug_symbol(sym,suffix=""):
+    '''Get internals values for blobs (forward only).'''
+    args = sym.list_arguments()
+    output_names  = [] # sym.list_outputs()
+
+    sym = sym.get_internals()
+    blob_names = sym.list_outputs()
+    sym_group = []
+    for i in range(len(blob_names)):
+        if blob_names[i] not in args:
+            x = sym[i]
+            if blob_names[i] not in output_names:
+                x = mx.symbol.BlockGrad(x, name="%s_%s" % (blob_names[i],suffix))
+            sym_group.append(x)
+    sym = mx.symbol.Group(sym_group)
+    return sym
+
+def debug_symbol_standalone(sym : mx.symbol,suffix=""):
+    return  mx.symbol.BlockGrad(sym, name="%s_%s" % (sym.name,suffix))

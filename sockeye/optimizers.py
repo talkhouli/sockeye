@@ -22,7 +22,7 @@ from typing import Optional, Tuple
 
 import mxnet as mx
 
-from sockeye.utils import check_condition
+from utils import check_condition
 
 BatchState = namedtuple("BatchState", ["metric_val"])
 CheckpointState = namedtuple("CheckpointState", ["checkpoint", "metric_val"])

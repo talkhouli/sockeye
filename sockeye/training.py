@@ -103,7 +103,10 @@ class TrainingModel(model.SockeyeModel):
         source_length = utils.compute_lengths(source)
         target = mx.sym.Variable(C.TARGET_NAME)
         target_length = utils.compute_lengths(target)
-        labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME), shape=(-1,))
+        labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME
+                                                     if self.config.output_classes == C.WORDS
+                                                     else C.ALIGNMENT_JUMP_LABEL_NAME),
+                                shape=(-1,))
         alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
 
         model_loss = loss.get_loss(self.config.config_loss)
@@ -146,12 +149,22 @@ class TrainingModel(model.SockeyeModel):
             target_decoded = mx.sym.reshape(data=target_decoded, shape=(-3, 0))
 
             # output layer
-            # logits: (batch_size * target_seq_len, target_vocab_size)
+            # logits: (batch_size * target_seq_len, output_layer_size)
             logits = self.output_layer(target_decoded)
 
             probs = model_loss.get_loss(logits, labels)
 
-            return mx.sym.Group(probs), data_names, label_names
+      #      return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.attention.align_bias_prob)] +
+      #                          [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
+      #                              enumerate(self.decoder.attention.debug_attention_hidden_before_bias) if sym is not None] +
+      #                          [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
+      #                              enumerate(self.decoder.attention.debug_attention_hidden_after_bias)  if sym is not None] +
+      #                          [utils.debug_symbol_standalone(sym,suffix="%d"%idx) for idx,sym in
+      #                              enumerate(self.decoder.attention.debug_alignment_one_hot) if sym is not None]), data_names, label_names
+            return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.debug_alignment)] + \
+                                [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
+                                                              enumerate(self.decoder.debug_attention)  if sym is not None]
+                                ), data_names, label_names
 
         if self.bucketing:
             logger.info("Using bucketing. Default max_seq_len=%s", train_iter.default_bucket_key)
@@ -261,6 +274,7 @@ class TrainingModel(model.SockeyeModel):
         self.module.bind(data_shapes=train_iter.provide_data, label_shapes=train_iter.provide_label,
                          for_training=True, force_rebind=True, grad_req='write')
         self.module.symbol.save(os.path.join(output_folder, C.SYMBOL_NAME))
+
 
         self.module.init_params(initializer=initializer, arg_params=self.params, aux_params=None,
                                 allow_missing=allow_missing_params, force_init=False)

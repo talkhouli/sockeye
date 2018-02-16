@@ -95,11 +95,14 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
                             attention_num_hidden=config.num_hidden,
                             layer_normalization=config.layer_normalization,
                             alignment_bias=config.alignment_bias)
+    elif config.type == C.ATT_ALIGNMENT:
+        return Alignment(input_previous_word=config.input_previous_word)
     elif config.type == C.ATT_COV:
         return MlpAttention(input_previous_word=config.input_previous_word,
                             attention_num_hidden=config.num_hidden,
                             layer_normalization=config.layer_normalization,
-                            config_coverage=config.config_coverage)
+                            config_coverage=config.config_coverage,
+                            alignment_bias=config.alignment_bias)
     else:
         raise ValueError("Unknown attention type %s" % config.type)
 
@@ -581,7 +584,7 @@ class MlpAttention(Attention):
                  attention_num_hidden: int,
                  layer_normalization: bool = False,
                  config_coverage: Optional[coverage.CoverageConfig] = None,
-                 alignment_bias: bool = False) -> None:
+                 alignment_bias: float = 0.0) -> None:
         dynamic_source_num_hidden = 1 if config_coverage is None else config_coverage.num_hidden
         super().__init__(input_previous_word=input_previous_word,
                          dynamic_source_num_hidden=dynamic_source_num_hidden)
@@ -604,6 +607,7 @@ class MlpAttention(Attention):
         self._ln = layers.LayerNormalization(num_hidden=attention_num_hidden,
                                              prefix="%snorm" % self.prefix) if layer_normalization else None
 
+
     def on(self, source: mx.sym.Symbol, source_length: mx.sym.Symbol, source_seq_len: int) -> Callable:
         """
         Returns callable to be used for recurrent attention in a sequence decoder.
@@ -625,6 +629,11 @@ class MlpAttention(Attention):
                                               no_bias=True,
                                               flatten=False,
                                               name="%ssource_hidden_fc" % self.prefix)
+        #self.debug_cnt =0
+        #self.debug_alignment_one_hot = [None] * 100
+        #self.debug_attention_hidden_before_bias = [None] * 100
+        #self.debug_attention_hidden_after_bias = [None] * 100
+        self.align_bias_prob = mx.sym.uniform(low=0, high=1, shape=1)
 
         def attend(att_input: AttentionInput, att_state: AttentionState,
                    alignment: mx.sym.Symbol = None) -> AttentionState:
@@ -665,8 +674,8 @@ class MlpAttention(Attention):
             # (batch_size, seq_len, attention_num_hidden)
             attention_hidden = mx.sym.broadcast_add(lhs=attention_hidden_lhs, rhs=query_hidden,
                                                     name="%squery_plus_input" % self.prefix)
-
-            if self.alignment_bias:
+            #self.debug_attention_hidden_before_bias[self.debug_cnt] = attention_hidden
+            if self.alignment_bias > 0.0:
                 #(batch_size, 1, seq_len)
                 alignment_one_hot = mx.sym.one_hot(alignment,source_seq_len,name="%salignment_one_hot" % self.prefix)
                 #(batch_size,attention_num_hidden,seq_len)
@@ -675,7 +684,10 @@ class MlpAttention(Attention):
                 alignment_one_hot = mx.sym.swapaxes(alignment_one_hot,1,2)
                 #(batch_size,seq_len,attention_num_hidden)
                 seq_align_bias = mx.sym.broadcast_mul(rhs=self.att_align_bias, lhs=alignment_one_hot)
-                attention_hidden = seq_align_bias + attention_hidden
+                #self.debug_alignment_one_hot[self.debug_cnt] = seq_align_bias
+                #self.debug_cnt +=1
+                attention_hidden = mx.sym.where(self.alignment_bias > self.align_bias_prob, seq_align_bias + attention_hidden, attention_hidden)
+                #self.debug_attention_hidden_after_bias[self.debug_cnt] = attention_hidden
 
             if self._ln is not None:
                 attention_hidden = self._ln.normalize(attention_hidden)
@@ -706,6 +718,68 @@ class MlpAttention(Attention):
             return AttentionState(context=context,
                                   probs=attention_probs,
                                   dynamic_source=dynamic_source)
+
+        return attend
+
+
+class Alignment(Attention):
+    """
+    Attention computed through a one-layer MLP with num_hidden units [Luong et al, 2015].
+
+    :math:`score(h_t, h_s) = \\mathbf{W}_a tanh(\\mathbf{W}_c [h_t, h_s] + b)`
+
+    :math:`a = softmax(score(*, h_s))`
+
+    Optionally, if attention_coverage_type is not None, attention uses dynamic source encoding ('coverage' mechanism)
+    as in Tu et al. (2016): Modeling Coverage for Neural Machine Translation.
+
+    :math:`score(h_t, h_s) = \\mathbf{W}_a tanh(\\mathbf{W}_c [h_t, h_s, c_s] + b)`
+
+    :math:`c_s` is the decoder time-step dependent source encoding which is updated using the current
+    decoder state.
+
+    :param input_previous_word: Feed the previous target embedding into the attention mechanism.
+    :param attention_num_hidden: Number of hidden units.
+    :param layer_normalization: If true, normalizes hidden layer outputs before tanh activation.
+    :param config_coverage: Optional coverage config.
+    """
+
+    def __init__(self,input_previous_word: bool) -> None:
+        super().__init__(input_previous_word=input_previous_word)
+
+    def on(self, source: mx.sym.Symbol, source_length: mx.sym.Symbol, source_seq_len: int) -> Callable:
+        """
+        Returns callable to be used for recurrent attention in a sequence decoder.
+        The callable is a recurrent function of the form:
+        AttentionState = attend(AttentionInput, AttentionState).
+
+        :param source: Shape: (batch_size, seq_len, encoder_num_hidden).
+        :param source_length: Shape: (batch_size,).
+        :param source_seq_len: Maximum length of source sequences.
+        :return: Attention callable.
+        """
+
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None) -> AttentionState:
+            """
+            Returns aligned context.
+
+            :param att_input: Attention input as returned by make_input().
+            :param att_state: Current attention state
+            :param alignment: Shape: (batch_size,)
+            :return: Updated attention state.
+            """
+
+            attention_scores  = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+            attention_scores = mx.sym.swapaxes(attention_scores,1,2)
+            context = mx.sym.batch_dot(lhs=source, rhs=attention_scores, transpose_a=True)
+            # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
+            context = mx.sym.reshape(data=context, shape=(0, 0))
+            attention_probs = mx.sym.reshape(data=attention_scores, shape=(0, 0))
+
+            return AttentionState(context=context,
+                                  probs=attention_probs,
+                                  dynamic_source=att_state.dynamic_source)
 
         return attend
 

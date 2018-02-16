@@ -24,15 +24,15 @@ from typing import Optional, Iterable
 import mxnet as mx
 
 import sockeye
-import sockeye.arguments as arguments
-import sockeye.constants as C
-import sockeye.data_io
-import sockeye.inference
-from sockeye.lexicon import TopKLexicon
-import sockeye.output_handler
-from sockeye.log import setup_main_logger
-from sockeye.utils import acquire_gpus, get_num_gpus, log_basic_info
-from sockeye.utils import check_condition, grouper
+import arguments as arguments
+import constants as C
+import data_io
+import inference
+from lexicon import TopKLexicon
+import output_handler as output_handler
+from log import setup_main_logger
+from utils import acquire_gpus, get_num_gpus, log_basic_info
+from utils import check_condition, grouper
 
 
 logger = setup_main_logger(__name__, file_logging=False)
@@ -55,14 +55,14 @@ def main():
 
     log_basic_info(args)
 
-    output_handler = sockeye.output_handler.get_output_handler(args.output_type,
+    out_handler = output_handler.get_output_handler(args.output_type,
                                                                args.output,
                                                                args.sure_align_threshold)
 
     with ExitStack() as exit_stack:
         context = _setup_context(args, exit_stack)
 
-        models, vocab_source, vocab_target = sockeye.inference.load_models(
+        models, vocab_source, vocab_target = inference.load_models(
             context,
             args.max_input_len,
             args.beam_size,
@@ -77,19 +77,22 @@ def main():
         if args.restrict_lexicon:
             restrict_lexicon = TopKLexicon(vocab_source, vocab_target)
             restrict_lexicon.load(args.restrict_lexicon)
-        translator = sockeye.inference.Translator(context,
+        translator = inference.Translator(context,
                                                   args.ensemble_mode,
                                                   args.bucket_width,
-                                                  sockeye.inference.LengthPenalty(args.length_penalty_alpha,
+                                                  inference.LengthPenalty(args.length_penalty_alpha,
                                                                                   args.length_penalty_beta),
                                                   models,
                                                   vocab_source,
                                                   vocab_target,
-                                                  restrict_lexicon)
-        read_and_translate(translator, output_handler, args.chunk_size, args.input)
+                                          restrict_lexicon,
+                                          lex_weight=args.lex_weight,
+                                          align_weight=args.align_weight
+                                          )
+        read_and_translate(translator, out_handler, args.chunk_size, args.input)
 
 
-def read_and_translate(translator: sockeye.inference.Translator, output_handler: sockeye.output_handler.OutputHandler,
+def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,
                        chunk_size: Optional[int], source: Optional[str] = None) -> None:
     """
     Reads from either a file or stdin and translates each line, calling the output_handler with the result.
@@ -99,7 +102,7 @@ def read_and_translate(translator: sockeye.inference.Translator, output_handler:
     :param chunk_size: The size of the portion to read at a time from the input.
     :param source: Path to file which will be translated line-by-line if included, if none use stdin.
     """
-    source_data = sys.stdin if source is None else sockeye.data_io.smart_open(source)
+    source_data = sys.stdin if source is None else data_io.smart_open(source)
 
     batch_size = translator.batch_size
     if chunk_size is None:
@@ -131,8 +134,8 @@ def read_and_translate(translator: sockeye.inference.Translator, output_handler:
         logger.info("Processed 0 lines.")
 
 
-def translate(output_handler: sockeye.output_handler.OutputHandler, source_data: Iterable[str],
-                    translator: sockeye.inference.Translator, chunk_id: int = 0) -> float:
+def translate(output_handler: output_handler.OutputHandler, source_data: Iterable[str],
+                    translator: inference.Translator, chunk_id: int = 0) -> float:
     """
     Translates each line from source_data, calling output handler after translating a batch.
 

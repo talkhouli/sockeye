@@ -58,7 +58,7 @@ from typing import Dict
 import numpy as np
 import mxnet as mx
 
-from sockeye.log import setup_main_logger, log_sockeye_version
+from log import setup_main_logger, log_sockeye_version
 from . import arguments
 from . import utils
 from . import vocab

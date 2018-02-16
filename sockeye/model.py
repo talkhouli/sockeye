@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import mxnet as mx
 
 from sockeye import __version__
-from sockeye.config import Config
+from config import Config
 import constants as C
 import data_io
 import decoder
@@ -61,6 +61,7 @@ class ModelConfig(Config):
                  config_encoder: Config,
                  config_decoder: Config,
                  config_loss: loss.LossConfig,
+                 output_classes: str,
                  weight_tying: bool = False,
                  weight_tying_type: Optional[str] = C.WEIGHT_TYING_TRG_SOFTMAX,
                  weight_normalization: bool = False) -> None:
@@ -78,6 +79,8 @@ class ModelConfig(Config):
         self.weight_tying = weight_tying
         self.weight_tying_type = weight_tying_type
         self.weight_normalization = weight_normalization
+        self.output_classes=output_classes
+        self.output_layer_size=vocab_target_size if output_classes== C.WORDS else C.NUM_ALIGNMENT_JUMPS
         if weight_tying and weight_tying_type is None:
             raise RuntimeError("weight_tying_type must be specified when using weight_tying.")
 
@@ -181,7 +184,7 @@ class SockeyeModel:
                                          shape=(self.config.config_embed_target.vocab_size,
                                                 self.config.config_embed_target.num_embed))
         w_out_target = mx.sym.Variable("target_output_weight",
-                                       shape=(self.config.vocab_target_size, self.decoder.get_num_hidden()))
+                                       shape=(self.config.output_layer_size, self.decoder.get_num_hidden()))
 
         if self.config.weight_tying:
             if C.WEIGHT_TYING_SRC in self.config.weight_tying_type \
@@ -222,7 +225,7 @@ class SockeyeModel:
 
         # output layer
         self.output_layer = layers.OutputLayer(hidden_size=self.decoder.get_num_hidden(),
-                                               vocab_size=self.config.vocab_target_size,
+                                               vocab_size=self.config.output_layer_size,
                                                weight=out_weight_target,
                                                weight_normalization=self.config.weight_normalization)
 

@@ -22,7 +22,7 @@ from typing import Dict, Optional
 
 import mxnet as mx
 
-import sockeye.output_handler
+import output_handler
 import evaluate
 import chrf
 import constants as C
@@ -133,7 +133,7 @@ class CheckpointDecoder:
         trans_wall_time = 0.0
         translations = []
         with data_io.smart_open(output_name, 'w') as output:
-            handler = sockeye.output_handler.StringOutputHandler(output)
+            handler = output_handler.StringOutputHandler(output)
             tic = time.time()
             trans_inputs = [translator.make_input(i, line) for i, line in enumerate(self.input_sentences)]
             trans_outputs = translator.translate(trans_inputs)

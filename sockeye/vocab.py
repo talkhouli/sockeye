@@ -21,7 +21,7 @@ from contextlib import ExitStack
 from itertools import chain, islice
 from typing import Dict, Iterable, List, Mapping
 
-from sockeye.data_io import get_tokens, smart_open
+from data_io import get_tokens, smart_open
 import utils
 import arguments
 import constants as C

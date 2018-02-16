@@ -19,7 +19,7 @@ import sys
 import os
 from typing import Callable, Optional
 
-from sockeye.lr_scheduler import LearningRateSchedulerFixedStep
+from lr_scheduler import LearningRateSchedulerFixedStep
 import constants as C
 import data_io
 
@@ -397,6 +397,10 @@ def add_model_parameters(params):
                               default=False,
                               help="Add positional encodings to final segment embeddings for"
                                    " ConvolutionalEmbeddingEncoder. Default: %(default)s.")
+    model_params.add_argument('--output-classes',
+                              choices=C.OUTPUT_CLASSES,
+                              default=C.WORDS,
+                              help="Output layer classes to be predicted. Default: %(default)s.")
 
     # convolutional encoder/decoder arguments arguments
     model_params.add_argument('--cnn-kernel-width',
@@ -564,6 +568,11 @@ def add_model_parameters(params):
     model_params.add_argument('--weight-normalization', action="store_true",
                               help="Adds weight normalization to decoder output layers "
                                    "(and all convolutional weight matrices for CNN decoders). Default: %(default)s.")
+
+    model_params.add_argument('--alignment-bias',
+                              type=float,
+                              default=0.0,
+                              help="alignment bias rate during training. Default: %(default)s.")
 
 
 def add_training_args(params):
@@ -937,6 +946,14 @@ def add_inference_args(params):
                                type=float,
                                help='Beta factor for the length penalty used in beam search: '
                                     '(beta + len(Y))**alpha/(beta + 1)**alpha. Default: %(default)s')
+    decode_params.add_argument('--lex-weight',
+                               type=float,
+                               default=1.0,
+                               help='Lexical model weight for alignment-based NMT.  Default: %(default)s')
+    decode_params.add_argument('--align-weight',
+                               type=float,
+                               default=0.0,
+                               help='Alignment model weight for alignment-based NMT.  Default: %(default)s')
 
 
 def add_evaluate_args(params):

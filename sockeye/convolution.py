@@ -14,7 +14,7 @@
 """
 Convolutional layers.
 """
-from sockeye.config import Config
+from config import Config
 import utils
 import constants as C
 import layers

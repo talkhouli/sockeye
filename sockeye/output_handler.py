@@ -15,10 +15,10 @@ from abc import ABC, abstractmethod
 import sys
 from typing import Optional
 
-import sockeye.constants as C
-from . import data_io
-from . import inference
-from sockeye.utils import plot_attention, print_attention_text, get_alignments
+import constants as C
+import data_io
+import inference
+from utils import plot_attention, print_attention_text, get_alignments
 
 
 def get_output_handler(output_type: str,

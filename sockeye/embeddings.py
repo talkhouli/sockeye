@@ -21,12 +21,12 @@ from typing import Iterable, Tuple
 import mxnet as mx
 import numpy as np
 
-import sockeye.constants as C
-import sockeye.translate
-import sockeye.utils
-import sockeye.vocab
-from sockeye.log import setup_main_logger
-from sockeye.utils import check_condition
+import constants as C
+import translate
+import utils
+import vocab
+from log import setup_main_logger
+from utils import check_condition
 
 logger = setup_main_logger(__name__, file_logging=False)
 
@@ -84,10 +84,10 @@ def main():
 
     logger.info("Arguments: %s", args)
 
-    vocab = sockeye.vocab.vocab_from_json_or_pickle(args.vocab)
-    vocab_inv = sockeye.vocab.reverse_vocab(vocab)
+    vocab = vocab.vocab_from_json_or_pickle(args.vocab)
+    vocab_inv = vocab.reverse_vocab(vocab)
 
-    params, _ = sockeye.utils.load_params(args.params)
+    params, _ = utils.load_params(args.params)
     weights = params[C.SOURCE_EMBEDDING_PREFIX + "weight"]
     if args.side == 'target':
         weights = params[C.TARGET_EMBEDDING_PREFIX + "weight"]
