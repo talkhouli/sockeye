@@ -201,7 +201,7 @@ def get_training_data_iters(source: str, target: str,
                                           add_eos=True,
                                           limit=None)
     val_target_sentences = SentenceReader(validation_target, vocab_target, add_bos=True, limit=None)
-    val_alignment_sentences = AlignmentReader(validation_alignment, add_bos=output_type !=  C.WORDS,
+    val_alignment_sentences = AlignmentReader(validation_alignment, add_bos=output_type != C.WORDS,
                                               add_eos=True,
                                               limit=sequence_limit,
                                               source_lengths=[len(s) for s in val_source_sentences]) if alignment is not None else []
@@ -346,15 +346,20 @@ def get_alignment(line: str) -> (int,int):
 
 
 
-def tokens2ids(tokens: Iterable[str], vocab: Dict[str, int]) -> List[int]:
+def tokens2ids(tokens: Iterable[str], vocab: Dict[str, int], 
+                has_categ_content= False) -> List[int]:
     """
     Returns sequence of ids given a sequence of tokens and vocab.
 
     :param tokens: List of tokens.
     :param vocab: Vocabulary (containing UNK symbol).
+    :param has_categ_content: set to true during inference, correctly map words
+                                prefixed with C.NUM_SYMBOL + '_'
     :return: List of word ids.
     """
-    return [vocab.get(w, vocab[C.UNK_SYMBOL]) for w in tokens]
+    return [vocab.get(C.NUM_SYMBOL, vocab[C.UNK_SYMBOL])
+            if w.startswith(C.NUM_SYMBOL + '_') else vocab.get(w, vocab[C.UNK_SYMBOL])
+            for w in tokens]
 
 
 class SentenceReader(Iterator):

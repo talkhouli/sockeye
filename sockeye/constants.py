@@ -20,6 +20,7 @@ import numpy as np
 BOS_SYMBOL = "<s>"
 EOS_SYMBOL = "</s>"
 UNK_SYMBOL = "<unk>"
+NUM_SYMBOL = "$number"
 PAD_SYMBOL = "<pad>"
 PAD_ID = 0
 TOKEN_SEPARATOR = " "

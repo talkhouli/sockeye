@@ -865,7 +865,8 @@ class Translator:
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
         for j, tokens in enumerate(sequences):
-            ids = data_io.tokens2ids(tokens, self.vocab_source)
+            ids = data_io.tokens2ids(tokens,
+                    self.vocab_source, has_categ_content=True)
             for i, wid in enumerate(ids):
                 source[j, i] = wid
             source[j,len(tokens)] = self.vocab_source[C.EOS_SYMBOL]
@@ -890,7 +891,8 @@ class Translator:
         attention_matrix = translation.attention_matrix[1:, :]
 
         target_tokens = [self.vocab_target_inv[target_id] for target_id in target_ids]
-        target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])] if token == C.UNK_SYMBOL else token  for i,token in enumerate(target_tokens) ]
+        target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
+                            if token == C.UNK_SYMBOL or token == C.NUM_SYMBOL else token  for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
             target_token for target_id, target_token in zip(target_ids, target_tokens) if
             target_id not in self.stop_ids)
