@@ -243,7 +243,7 @@ class InferenceModel(model.SockeyeModel):
                     logits /= self.softmax_temperature
                 outputs = mx.sym.softmax(data=logits, name=C.SOFTMAX_NAME)
 
-            data_names = [C.TARGET_NAME] + state_names + [C.ALIGNMENT_NAME] if self.alignment_based else []
+            data_names = [C.TARGET_NAME] + state_names + ([C.ALIGNMENT_NAME] if self.alignment_based else [])
             label_names = []  # type: List[str]
             return mx.sym.Group([outputs, attention_probs] + states), data_names, label_names
 
@@ -281,9 +281,9 @@ class InferenceModel(model.SockeyeModel):
                                       target_max_length,
                                       self.encoder.get_encoded_seq_len(source_max_length),
                                       self.encoder.get_num_hidden()) +
-            [mx.io.DataDesc(name=C.ALIGNMENT_NAME,
+            ([mx.io.DataDesc(name=C.ALIGNMENT_NAME,
                             shape=(self.batch_size * self.beam_size,1),
-                            layout="NT")] if self.alignment_based else [])
+                            layout="NT")] if self.alignment_based else []))
 
     def run_encoder(self,
                     source: mx.nd.NDArray,
@@ -892,7 +892,9 @@ class Translator:
 
         target_tokens = [self.vocab_target_inv[target_id] for target_id in target_ids]
         target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
-                            if token == C.UNK_SYMBOL or token == C.NUM_SYMBOL else token  for i,token in enumerate(target_tokens) ]
+                            if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
+                                np.argmax(translation.attention_matrix[i + 1]) < len(translation.source) else token
+                         for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
             target_token for target_id, target_token in zip(target_ids, target_tokens) if
             target_id not in self.stop_ids)
@@ -1198,7 +1200,9 @@ class Translator:
         models_output_layer_b = list()
         pad_dist = self.pad_dist
         #TODO (Tamer) remove instate from init?
-        pad_dist = pad_dist = mx.nd.full((self.batch_size * self.beam_size, source_length, len(self.vocab_target)),
+        pad_dist = pad_dist = mx.nd.full((self.batch_size * self.beam_size,
+                                          source_length if self.models[0].alignment_based else 1,
+                                          len(self.vocab_target)),
                                   val=np.inf, ctx=self.context)
         vocab_slice_ids = None  # type: mx.nd.NDArray
         if self.restrict_lexicon:
