@@ -610,7 +610,11 @@ class RecurrentDecoder(Decoder):
         :param alignment: alignment source positions.  Shape (batch_size,)
         :return: logit inputs, attention probabilities, next decoder states.
         """
-        source_encoded, prev_dynamic_source, source_encoded_length, prev_hidden, *layer_states = states
+        prev_hidden = None
+        if self.config.alignment_model:
+            source_encoded, prev_dynamic_source, source_encoded_length, *layer_states = states
+        else:
+            source_encoded, prev_dynamic_source, source_encoded_length, prev_hidden, *layer_states = states
 
         attention_func = self.attention.on(source_encoded, source_encoded_length, source_encoded_max_length)
 
@@ -629,8 +633,9 @@ class RecurrentDecoder(Decoder):
 
         new_states = [source_encoded,
                       attention_state.dynamic_source,
-                      source_encoded_length,
-                      state.hidden] + state.layer_states
+                      source_encoded_length ] + \
+                     ([state.hidden] if not self.config.alignment_model else []) + \
+                     state.layer_states
 
         return state.hidden, attention_state.probs, new_states
 
@@ -673,7 +678,8 @@ class RecurrentDecoder(Decoder):
         hidden, layer_states = self.get_initial_state(source_encoded_time_major, source_encoded_lengths)
         context, attention_probs, dynamic_source = self.attention.get_initial_state(source_encoded_lengths,
                                                                                     source_encoded_max_length)
-        states = [source_encoded, dynamic_source, source_encoded_lengths, hidden] + layer_states
+        states = [source_encoded, dynamic_source, source_encoded_lengths] + \
+                 ([hidden] if not self.config.alignment_model else []) + layer_states
         return states
 
     def state_variables(self, target_max_length: int) -> List[mx.sym.Symbol]:
@@ -685,8 +691,8 @@ class RecurrentDecoder(Decoder):
         """
         return [mx.sym.Variable(C.SOURCE_ENCODED_NAME),
                 mx.sym.Variable(C.SOURCE_DYNAMIC_PREVIOUS_NAME),
-                mx.sym.Variable(C.SOURCE_LENGTH_NAME),
-                mx.sym.Variable(C.HIDDEN_PREVIOUS_NAME)] + \
+                mx.sym.Variable(C.SOURCE_LENGTH_NAME)] + \
+               ([mx.sym.Variable(C.HIDDEN_PREVIOUS_NAME)] if not self.config.alignment_model else []) + \
                [mx.sym.Variable("%senc2decinit_%d" % (self.prefix, i)) for i in
                 range(len(sum([rnn.state_info for rnn in self.get_rnn_cells()], [])))]
 
@@ -713,10 +719,10 @@ class RecurrentDecoder(Decoder):
                                layout=C.BATCH_MAJOR),
                 mx.io.DataDesc(C.SOURCE_LENGTH_NAME,
                                (batch_size,),
-                               layout="N"),
-                mx.io.DataDesc(C.HIDDEN_PREVIOUS_NAME,
+                               layout="N")] + \
+               ([mx.io.DataDesc(C.HIDDEN_PREVIOUS_NAME,
                                (batch_size, self.num_hidden),
-                               layout="NC")] + \
+                               layout="NC")] if not self.config.alignment_model else [] )+ \
                [mx.io.DataDesc("%senc2decinit_%d" % (self.prefix, i),
                                (batch_size, num_hidden),
                                layout=C.BATCH_MAJOR) for i, (_, num_hidden) in enumerate(
@@ -810,7 +816,9 @@ class RecurrentDecoder(Decoder):
         # (1) RNN step
         # concat previous word embedding and previous hidden state
         rnn_input = mx.sym.concat(word_vec_prev, state.hidden, dim=1,
-                                  name="%sconcat_target_context_t%d" % (self.prefix, seq_idx))
+                                  name="%sconcat_target_context_t%d" % (self.prefix, seq_idx)) \
+                        if not self.config.alignment_model else word_vec_prev
+
         # rnn_pre_attention_output: (batch_size, rnn_num_hidden)
         # next_layer_states: num_layers * [batch_size, rnn_num_hidden]
         rnn_pre_attention_output, rnn_pre_attention_layer_states = \
@@ -827,8 +835,8 @@ class RecurrentDecoder(Decoder):
                                         state.layer_states[self.rnn_pre_attention_n_states:])
             # do not concat if it is an alignmnet-model
             hidden_concat = mx.sym.concat(upper_rnn_output, attention_state.context,
-                                          dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx)) # TODO (Tamer) decide on whether it is best to include concat
-                                #if not self.config.alignment_model else upper_rnn_output
+                                          dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx)) \
+                                if not self.config.alignment_model else upper_rnn_output # TODO (Tamer) decide on whether it is best to include concat
             if self.config.hidden_dropout > 0:
                 hidden_concat = mx.sym.Dropout(data=hidden_concat, p=self.config.hidden_dropout,
                                                name='%shidden_concat_dropout_t%d' % (self.prefix, seq_idx))
@@ -838,8 +846,8 @@ class RecurrentDecoder(Decoder):
             upper_rnn_layer_states = []
             # do not concat if it is an alignmnet-model
             hidden_concat = mx.sym.concat(rnn_pre_attention_output, attention_state.context,
-                                          dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx)) # TODO (Tamer) decide on whether it is best to include concat
-                                    #if not self.config.alignment_model else attention_state.context
+                                          dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx)) #\
+                                    #if not self.config.alignment_model else attention_state.context  #
             if self.config.hidden_dropout > 0:
                 hidden_concat = mx.sym.Dropout(data=hidden_concat, p=self.config.hidden_dropout,
                                                name='%shidden_concat_dropout_t%d' % (self.prefix, seq_idx))
