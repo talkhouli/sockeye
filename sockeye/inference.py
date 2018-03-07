@@ -331,6 +331,7 @@ class InferenceModel(model.SockeyeModel):
                 break
 
         out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
+        new_states = [None] * len(model_state.states)
         for j in range(alignment_end_idx):
             alignment = []
             if self.alignment_based:
@@ -349,7 +350,7 @@ class InferenceModel(model.SockeyeModel):
                 bucket_key=bucket_key,
                 provide_data=self._get_decoder_data_shapes(bucket_key))
             self.decoder_module.forward(data_batch=batch, is_train=False)
-            out, attention_probs, *model_state.states = self.decoder_module.get_outputs()
+            out, attention_probs, *new_states = self.decoder_module.get_outputs()
             if out_result is None:
                 out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')
             if attention_probs_result is None:
@@ -360,8 +361,8 @@ class InferenceModel(model.SockeyeModel):
             #attention_probs_result.append(copy.deepcopy(attention_probs))
             if model_state_result is None:
                 model_state_result = [mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(state.shape)),dtype=state.dtype) for state in model_state.states]
-            for state_idx in range(len(model_state.states)):
-                model_state_result[state_idx][j] = model_state.states[state_idx]
+            for state_idx in range(len(new_states)):
+                model_state_result[state_idx][j] = new_states[state_idx]
             #model_state_result.append(copy.deepcopy(model_state))
             #model_state_result.append([ copy.deepcopy(e) for e in model_state.states])
 
