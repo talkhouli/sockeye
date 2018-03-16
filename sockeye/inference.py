@@ -575,6 +575,7 @@ Translation = NamedTuple('Translation', [
     ('attention_matrix', np.ndarray),
     ('score', float),
     ('coverage', np.ndarray),
+    ('alignment', np.ndarray),
     ('source',np.ndarray)
 ])
 
@@ -895,10 +896,15 @@ class Translator:
         attention_matrix = translation.attention_matrix[1:, :]
 
         target_tokens = [self.vocab_target_inv[target_id] for target_id in target_ids]
-        target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
-                            if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
-                                np.argmax(translation.attention_matrix[i + 1]) < len(translation.source) else token
-                         for i,token in enumerate(target_tokens) ]
+        if np.max(translation.alignment) > -1:
+            target_tokens = [token + '_' + translation.source[translation.alignment[i+1]]
+                             if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL)  else token
+                             for i, token in enumerate(target_tokens)]
+        else:
+            target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
+                                if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
+                                    np.argmax(translation.attention_matrix[i + 1]) < len(tran13dsslation.source) else token
+                             for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
             target_token for target_id, target_token in zip(target_ids, target_tokens) if
             target_id not in self.stop_ids)
@@ -1145,7 +1151,8 @@ class Translator:
     def _beam_search(self,
                      source: mx.nd.NDArray,
                      source_length: int,
-                     actual_source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray]:
+                     actual_source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, \
+                                                         mx.nd.NDArray, mx.nd.NDArray]:
         """
         Translates multiple sentences using beam search.
 
@@ -1153,7 +1160,7 @@ class Translator:
         :param source_length: Max source length.
         :param actual_source_length: Source length without padding
         :return List of lists of word ids, list of attentions, array of accumulated length-normalized
-                negative log-probs.
+                negative log-probs, lengths, coverage vector, alignments
         """
         # Length of encoded sequence (may differ from initial input length)
         encoded_source_length = self.models[0].encoder.get_encoded_seq_len(source_length)
@@ -1235,7 +1242,7 @@ class Translator:
         model_states = self._encode(source, source_length)
 
         #initial alignments set to -1
-        alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,1),dtype='int32') -1
+        alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,max_output_length),dtype='int32') -1
 
         logger.info("source length: %d",actual_source_length)
         for t in range(1, max_output_length):
@@ -1251,7 +1258,7 @@ class Translator:
                                                                        model_states,
                                                                        models_output_layer_w,
                                                                        models_output_layer_b,
-                                                                       prev_alignment=alignment,
+                                                                       prev_alignment=mx.nd.slice_axis(alignment,axis=1,begin=t-1,end=t),
                                                                        coverage_vector=coverage_vector)
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
@@ -1320,17 +1327,18 @@ class Translator:
                                           mx.nd.zeros(ctx=self.context,dtype='int32',shape=(self.beam_size* self.batch_size,source_length)),
                                           mx.ndarray.one_hot(best_hyp_pos_indices, depth=source_length, dtype='int32'))
 
-            # (7) determine which hypotheses in the beam are now finished
+            #(7) update previous alignment
+            alignment = mx.nd.take(alignment,best_hyp_indices)
+            alignment[:,t] =  best_hyp_pos_indices
+
+            # (8) determine which hypotheses in the beam are now finished
             finished = ((best_word_indices == C.PAD_ID) + (best_word_indices == self.vocab_target[C.EOS_SYMBOL]))
             if mx.nd.sum(finished).asscalar() == self.batch_size * self.beam_size:  # all finished
                 break
 
-            # (8) update models' state with winning hypotheses (ascending)
+            # (9) update models' state with winning hypotheses (ascending)
             for ms in model_states:
                 ms.sort_state(best_hyp_indices,best_hyp_pos_indices)
-
-            #(9) update previous alignment
-            alignment[:,0] =  best_hyp_pos_indices
 
             #DEBUGGING
             logger.info("coverage vector[t=%d]: %s",t,
@@ -1338,7 +1346,7 @@ class Translator:
 
 
 
-        return sequences, attentions, scores_accumulated[:,:,0], lengths, coverage_vector
+        return sequences, attentions, scores_accumulated[:,:,0], lengths, coverage_vector, alignment
 
     def _get_best_from_beam(self,
                             sequences: mx.nd.NDArray,
@@ -1346,6 +1354,7 @@ class Translator:
                             accumulated_scores: mx.nd.NDArray,
                             lengths: mx.nd.NDArray,
                             coverage_vector: mx.nd.NDArray,
+                            alignment: mx.nd.NDArray,
                             source: List[List[str]]) -> List[Translation]:
         """
         Return the best (aka top) entry from the n-best list.
@@ -1356,6 +1365,7 @@ class Translator:
         :param accumulated_scores: Array of length-normalized negative log-probs.
         :param lengths translation lengths
         :param coverage_vector final source coverage (batch_size*beam_size,encoded_source_length)
+        :param alignment final alignment used to generate the hypotheses (batch_size*beam_size,max_output_length)
         :param source: batch of source sequenecs
         :return: Top sequence, top attention matrix, top accumulated score (length-normalized
                  negative log-probs) and length.
@@ -1374,7 +1384,8 @@ class Translator:
             attention_matrix = np.stack(attention_lists[idx].asnumpy()[:length, :], axis=0)
             score = accumulated_scores[idx].asscalar()
             coverage = coverage_vector[idx].asnumpy()
-            result.append(Translation(sequence, attention_matrix, score, coverage,source[sent]))
+            align = alignment[idx].asnumpy()
+            result.append(Translation(sequence, attention_matrix, score, coverage, align, source[sent]))
             logger.info("max attention: %s. coverage vector: %s",
                         '[' + ' '.join([str(np.argmax(attention_matrix[j+1])) for j in range(length-1)]) + ']',
                         '[' + ' '.join([str(coverage[i]) for i in range(len(coverage))]) + ']')
