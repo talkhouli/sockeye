@@ -633,7 +633,8 @@ class MlpAttention(Attention):
         #self.debug_alignment_one_hot = [None] * 100
         #self.debug_attention_hidden_before_bias = [None] * 100
         #self.debug_attention_hidden_after_bias = [None] * 100
-        self.align_bias_prob = mx.sym.uniform(low=0, high=1, shape=1)
+        #self.align_bias_prob = mx.sym.uniform(low=0, high=1, shape=1)
+        self.align_bias_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
 
         def attend(att_input: AttentionInput, att_state: AttentionState,
                    alignment: mx.sym.Symbol = None) -> AttentionState:
