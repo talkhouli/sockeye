@@ -67,9 +67,7 @@ class InferenceModel(model.SockeyeModel):
         utils.check_version(self.model_version)
 
         config = model.SockeyeModel.load_config(os.path.join(model_folder, C.CONFIG_NAME))
-        #if used at all, alignment bias should be on all the time in decoding
-        if config.config_decoder.attention_config.alignment_bias > 0.0:
-            config.config_decoder.attention_config.alignment_bias = 1.0
+
         super().__init__(config)
 
         self.fname_params = os.path.join(model_folder, C.PARAMS_NAME % checkpoint if checkpoint else C.PARAMS_BEST_NAME)
