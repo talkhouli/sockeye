@@ -713,6 +713,54 @@ class PrintValueProp(mx.operator.CustomOpProp):
                           print_grad=self.print_grad,
                           use_logger=self.use_logger)
 
+class AlignBiasProb(mx.operator.CustomOp):
+    """
+    Custom operator that takes a symbol, prints its value to stdout and
+    propagates the value unchanged. Useful for debugging.
+
+    Use it as:
+    my_sym = mx.sym.Custom(op_type="PrintValue", data=my_sym, print_name="My symbol")
+
+    Additionally you can use the optional arguments 'use_logger=True' for using
+    the system logger and 'print_grad=True' for printing information about the
+    gradient (out_grad, i.e. "upper part" of the graph).
+    """
+    def __init__(self, low=0, high=1):
+        super().__init__()
+        self.low = int(low)
+        self.high = int(high)
+
+    def forward(self, is_train, req, in_data, out_data, aux):
+        uniform = mx.nd.zeros((1,))
+        if is_train:
+            uniform = mx.ndarray.random.uniform(low=self.low, high=self.high, shape=(1,))
+        self.assign(out_data[0], req[0], uniform)
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        self.assign(in_grad[0], req[0], out_grad[0])
+
+
+@mx.operator.register("AlignBiasProb")
+class AlignBiasProbProp(mx.operator.CustomOpProp):
+    def __init__(self, low=0, high=1):
+        super().__init__(need_top_grad=True)
+        self.low = int(low)
+        self.high = int(high)
+
+    def list_arguments(self):
+        return []
+
+    def list_outputs(self):
+        return ["output"]
+
+    def infer_shape(self, in_shape):
+        return [], [(1,)], []
+
+    def infer_type(self, in_type):
+        return in_type, [np.float32], []
+
+    def create_operator(self, ctx, shapes, dtypes):
+        return AlignBiasProb(low=self.low, high=self.high)
 
 def grouper(iterable: Iterable, size: int) -> Iterable:
     """
