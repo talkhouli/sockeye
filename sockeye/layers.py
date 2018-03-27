@@ -522,6 +522,33 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                             additional_head=additional_head)
 
 
+class AlignmentAttention:
+    def __init__(self,
+                 prefix: str,
+                 num_hidden) -> None:
+        self.prefix = prefix
+        self.num_hidden = num_hidden
+
+        self.w_a2h = mx.sym.Variable(name="%sa2h_weight" % prefix)
+        self.b_a2h = mx.sym.Variable(name="%sa2h_bias" % prefix)
+
+    def __call__(self,
+                 source: mx.sym.Symbol,
+                 alignment: mx.sym.Symbol,
+                 source_seq_len: int) -> mx.sym.Symbol:
+        attention_scores = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+        attention_scores = mx.sym.swapaxes(attention_scores, 1, 2)
+        context = mx.sym.batch_dot(lhs=source, rhs=attention_scores, transpose_a=True,
+                                   name="%salignment_batch_dot" % self.prefix)
+        context = mx.sym.swapaxes(context, 1, 2)
+        context = mx.sym.FullyConnected(data=context,
+                                        weight=self.w_a2h,
+                                        bias=self.b_a2h,
+                                        num_hidden=self.num_hidden,
+                                        flatten=False)
+        return context
+
+
 class ProjectedDotAttention:
     """
     Dot attention layer for queries independent from keys/values.
