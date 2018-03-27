@@ -139,6 +139,8 @@ class TransformerDecoderBlock:
                                                        depth_out=config.model_size,
                                                        dropout=config.dropout_attention,
                                                        prefix="%satt_enc_" % prefix)
+        self.alignment_head = layers.AlignmentAttention(num_hidden=config.model_size//config.attention_heads,
+                                                        prefix="%salign_head_" % prefix)
         self.post_enc_attention = TransformerProcessBlock(sequence=config.postprocess_sequence,
                                                           num_hidden=config.model_size,
                                                           dropout=config.dropout_prepost,
@@ -157,13 +159,18 @@ class TransformerDecoderBlock:
                                                num_hidden=config.model_size,
                                                dropout=config.dropout_prepost,
                                                prefix="%sff_post_" % prefix)
+        self.w_a2h = mx.sym.Variable(name="%sweight_a2h" % prefix)
+        self.b_a2h = mx.sym.Variable(name="%sbias_a2h" % prefix)
+        self.model_size = config.model_size
 
     def __call__(self,
                  target: mx.sym.Symbol,
                  target_bias: mx.sym.Symbol,
                  source: mx.sym.Symbol,
                  source_bias: mx.sym.Symbol,
-                 cache: Optional[Dict[str, Optional[mx.sym.Symbol]]] = None) -> mx.sym.Symbol:
+                 source_seq_len: int,
+                 cache: Optional[Dict[str, Optional[mx.sym.Symbol]]] = None,
+                 alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
 
         # self-attention
         target_self_att = self.self_attention(inputs=self.pre_self_attention(target, None),
@@ -172,9 +179,12 @@ class TransformerDecoderBlock:
         target = self.post_self_attention(target_self_att, target)
 
         # encoder attention
+        align_context = self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len)
         target_enc_att = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,
-                                            bias=source_bias)
+                                            bias=source_bias,
+                                            additional_head=align_context)
+
         target = self.post_enc_attention(target_enc_att, target)
 
         # feed-forward
