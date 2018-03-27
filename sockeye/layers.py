@@ -349,7 +349,8 @@ class MultiHeadAttentionBase:
                 keys: mx.sym.Symbol,
                 values: mx.sym.Symbol,
                 lengths: Optional[mx.sym.Symbol] = None,
-                bias: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                bias: Optional[mx.sym.Symbol] = None,
+                additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Returns context vectors of multi-head dot attention.
 
@@ -375,6 +376,9 @@ class MultiHeadAttentionBase:
 
         # (batch, query_max_length, depth)
         contexts = combine_heads(contexts, self.depth_per_head, self.heads)
+
+        if additional_head is not None:
+            contexts = mx.sym.concat(contexts, additional_head, dim=2, name="%salign_head_concat" % self.prefix)
 
         # contexts: (batch, query_max_length, output_depth)
         contexts = mx.sym.FullyConnected(data=contexts,
@@ -476,7 +480,8 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                  queries: mx.sym.Symbol,
                  memory: mx.sym.Symbol,
                  memory_lengths: Optional[mx.sym.Symbol] = None,
-                 bias: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                 bias: Optional[mx.sym.Symbol] = None,
+                 additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Computes multi-head attention for queries given a memory tensor.
         If sequence lengths are provided, they will be used to mask the attention scores.
@@ -513,7 +518,8 @@ class MultiHeadAttention(MultiHeadAttentionBase):
         return self._attend(queries,
                             keys,
                             values,
-                            bias=bias)
+                            bias=bias,
+                            additional_head=additional_head)
 
 
 class ProjectedDotAttention:
