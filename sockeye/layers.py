@@ -525,12 +525,15 @@ class MultiHeadAttention(MultiHeadAttentionBase):
 class AlignmentAttention:
     def __init__(self,
                  prefix: str,
-                 num_hidden) -> None:
+                 num_hidden: int,
+                 alignment_bias: float = 0.5) -> None:
         self.prefix = prefix
         self.num_hidden = num_hidden
+        self.alignment_bias = alignment_bias
 
         self.w_a2h = mx.sym.Variable(name="%sa2h_weight" % prefix)
         self.b_a2h = mx.sym.Variable(name="%sa2h_bias" % prefix)
+        self.align_bias_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
 
     def __call__(self,
                  source: mx.sym.Symbol,
@@ -546,6 +549,7 @@ class AlignmentAttention:
                                         bias=self.b_a2h,
                                         num_hidden=self.num_hidden,
                                         flatten=False)
+        context = mx.sym.where(self.alignment_bias > self.align_bias_prob, context, mx.sym.zeros_like(context))
         return context
 
 
