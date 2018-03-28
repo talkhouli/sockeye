@@ -309,7 +309,9 @@ class TransformerDecoder(Decoder):
                            target_bias=target_bias,
                            source=source_encoded,
                            source_bias=source_bias,
-                           cache=layer_cache)
+                           cache=layer_cache,
+                           source_seq_len=source_encoded_max_length,
+                           alignment=alignment)
             # store updated keys and values in the cache.
             # (layer.__call__() has the side-effect of updating contents of layer_cache)
             cache += [layer_cache['k'], layer_cache['v']]
