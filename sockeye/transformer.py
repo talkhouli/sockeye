@@ -37,7 +37,7 @@ class TransformerConfig(config.Config):
                  postprocess_sequence: str,
                  max_seq_len_source: int,
                  max_seq_len_target: int,
-                 alignment_bias: float = 0.0,
+                 alignment_assisted: float = 0.0,
                  conv_config: Optional['ConvolutionalEmbeddingConfig'] = None) -> None:  # type: ignore
         super().__init__()
         self.model_size = model_size
@@ -53,7 +53,7 @@ class TransformerConfig(config.Config):
         self.postprocess_sequence = postprocess_sequence
         self.max_seq_len_source = max_seq_len_source
         self.max_seq_len_target = max_seq_len_target
-        self.alignment_bias = alignment_bias
+        self.alignment_assisted = alignment_assisted
         self.conv_config = conv_config
 
 
@@ -143,9 +143,9 @@ class TransformerDecoderBlock:
                                                        prefix="%satt_enc_" % prefix)
 
         self.alignment_head = layers.AlignmentAttention(num_hidden=config.model_size//config.attention_heads,
-                                                        alignment_bias=config.alignment_bias,
+                                                        alignment_assisted=config.alignment_assisted,
                                                         prefix="%salign_head_" % prefix)
-        self.alignment_bias = config.alignment_bias
+        self.alignment_assisted = config.alignment_assisted
 
         self.post_enc_attention = TransformerProcessBlock(sequence=config.postprocess_sequence,
                                                           num_hidden=config.model_size,
@@ -186,7 +186,7 @@ class TransformerDecoderBlock:
 
         # encoder attention
         align_context =  self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
-            if self.alignment_bias > 0 else None
+            if self.alignment_assisted > 0 else None
 
         target_enc_att = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,

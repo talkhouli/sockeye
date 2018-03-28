@@ -573,6 +573,10 @@ def add_model_parameters(params):
                               type=float,
                               default=0.0,
                               help="alignment bias rate during training. Default: %(default)s.")
+    model_params.add_argument('--alignment-assisted',
+                              type=float,
+                              default=0.0,
+                              help="alignment assisted rate during training. Default: %(default)s.")
 
 
 def add_training_args(params):

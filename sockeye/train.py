@@ -421,7 +421,7 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             postprocess_sequence=decoder_transformer_postprocess,
             max_seq_len_source=max_seq_len_source,
             max_seq_len_target=max_seq_len_target,
-            alignment_bias=args.alignment_bias,
+            alignment_assisted=args.alignment_assisted,
             conv_config=None)
 
     elif args.decoder == C.CONVOLUTION_TYPE:
