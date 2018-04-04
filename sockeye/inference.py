@@ -364,7 +364,7 @@ class InferenceModel(model.SockeyeModel):
             #out_result.append(copy.deepcopy(out))
             #attention_probs_result.append(copy.deepcopy(attention_probs))
             if model_state_result is None:
-                model_state_result = [mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(state.shape)),dtype=state.dtype) for state in model_state.states]
+                model_state_result = [mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(state.shape)),dtype=state.dtype) for state in new_states]
             for state_idx in range(len(new_states)):
                 model_state_result[state_idx][j] = new_states[state_idx]
             #model_state_result.append(copy.deepcopy(model_state))

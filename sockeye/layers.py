@@ -349,7 +349,8 @@ class MultiHeadAttentionBase:
                 keys: mx.sym.Symbol,
                 values: mx.sym.Symbol,
                 lengths: Optional[mx.sym.Symbol] = None,
-                bias: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                bias: Optional[mx.sym.Symbol] = None,
+                additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Returns context vectors of multi-head dot attention.
 
@@ -375,6 +376,9 @@ class MultiHeadAttentionBase:
 
         # (batch, query_max_length, depth)
         contexts = combine_heads(contexts, self.depth_per_head, self.heads)
+
+        if additional_head is not None:
+            contexts = mx.sym.concat(contexts, additional_head, dim=2, name="%salign_head_concat" % self.prefix)
 
         # contexts: (batch, query_max_length, output_depth)
         contexts = mx.sym.FullyConnected(data=contexts,
@@ -476,7 +480,8 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                  queries: mx.sym.Symbol,
                  memory: mx.sym.Symbol,
                  memory_lengths: Optional[mx.sym.Symbol] = None,
-                 bias: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                 bias: Optional[mx.sym.Symbol] = None,
+                 additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Computes multi-head attention for queries given a memory tensor.
         If sequence lengths are provided, they will be used to mask the attention scores.
@@ -513,7 +518,39 @@ class MultiHeadAttention(MultiHeadAttentionBase):
         return self._attend(queries,
                             keys,
                             values,
-                            bias=bias)
+                            bias=bias,
+                            additional_head=additional_head)
+
+
+class Alignment:
+    def __init__(self,
+                 prefix: str,
+                 num_hidden: int,
+                 alignment_assisted: float = 0.5) -> None:
+        self.prefix = prefix
+        self.num_hidden = num_hidden
+        self.alignment_assisted = alignment_assisted
+
+        self.w_a2h = mx.sym.Variable(name="%sa2h_weight" % prefix)
+        self.b_a2h = mx.sym.Variable(name="%sa2h_bias" % prefix)
+        self.align_assisted_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
+
+    def __call__(self,
+                 source: mx.sym.Symbol,
+                 alignment: mx.sym.Symbol,
+                 source_seq_len: int) -> mx.sym.Symbol:
+        attention_scores = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+        attention_scores = mx.sym.swapaxes(attention_scores, 1, 2)
+        context = mx.sym.batch_dot(lhs=source, rhs=attention_scores, transpose_a=True,
+                                   name="%salignment_batch_dot" % self.prefix)
+        context = mx.sym.swapaxes(context, 1, 2)
+        context = mx.sym.FullyConnected(data=context,
+                                        weight=self.w_a2h,
+                                        bias=self.b_a2h,
+                                        num_hidden=self.num_hidden,
+                                        flatten=False)
+        context = mx.sym.where(self.alignment_assisted > self.align_assisted_prob, context, mx.sym.zeros_like(context))
+        return context
 
 
 class ProjectedDotAttention:
