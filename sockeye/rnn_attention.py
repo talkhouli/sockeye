@@ -40,6 +40,8 @@ class AttentionConfig(config.Config):
     :param layer_normalization: Apply layer normalization to MLP attention.
     :param config_coverage: Optional coverage configuration.
     :param num_heads: Number of attention heads. Only used for Multi-head dot attention.
+    :param alignment_bias: rate of using alignment bias in training (applied batch-wise)
+    :param alignment_assisted: concat source context selected using alignment with attention-weighted source context
     """
     def __init__(self,
                  type: str,
@@ -50,7 +52,8 @@ class AttentionConfig(config.Config):
                  layer_normalization: bool,
                  config_coverage: Optional[coverage.CoverageConfig] = None,
                  num_heads: Optional[int] = None,
-                 alignment_bias: bool = False) -> None:
+                 alignment_bias: bool = False,
+                 alignment_assisted: float = 0.0) -> None:
         super().__init__()
         self.type = type
         self.num_hidden = num_hidden
@@ -61,6 +64,7 @@ class AttentionConfig(config.Config):
         self.config_coverage = config_coverage
         self.num_heads = num_heads
         self.alignment_bias = alignment_bias
+        self.alignment_assisted = alignment_assisted
 
 
 def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
@@ -94,7 +98,8 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
         return MlpAttention(input_previous_word=config.input_previous_word,
                             attention_num_hidden=config.num_hidden,
                             layer_normalization=config.layer_normalization,
-                            alignment_bias=config.alignment_bias)
+                            alignment_bias=config.alignment_bias,
+                            alignment_assisted=config.alignment_assisted)
     elif config.type == C.ATT_ALIGNMENT:
         return Alignment(input_previous_word=config.input_previous_word)
     elif config.type == C.ATT_COV:
@@ -102,7 +107,8 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
                             attention_num_hidden=config.num_hidden,
                             layer_normalization=config.layer_normalization,
                             config_coverage=config.config_coverage,
-                            alignment_bias=config.alignment_bias)
+                            alignment_bias=config.alignment_bias,
+                            alignment_assisted=config.alignment_assisted)
     else:
         raise ValueError("Unknown attention type %s" % config.type)
 
@@ -577,6 +583,11 @@ class MlpAttention(Attention):
     :param attention_num_hidden: Number of hidden units.
     :param layer_normalization: If true, normalizes hidden layer outputs before tanh activation.
     :param config_coverage: Optional coverage config.
+    :param alignment_bias: Optional use of extdernal hard alignment bias to compuate attention weights. Value
+                            determines how often this is used during training. When applied, it applies to
+                            the whole batch.
+    :param alignment_assisted: Optional boolean value to determine whether to concatenate the source context selected
+                                using external hard alignment with the attention-weighted source context
     """
 
     def __init__(self,
@@ -584,7 +595,8 @@ class MlpAttention(Attention):
                  attention_num_hidden: int,
                  layer_normalization: bool = False,
                  config_coverage: Optional[coverage.CoverageConfig] = None,
-                 alignment_bias: float = 0.0) -> None:
+                 alignment_bias: float = 0.0,
+                 alignment_assisted: float = 0.0) -> None:
         dynamic_source_num_hidden = 1 if config_coverage is None else config_coverage.num_hidden
         super().__init__(input_previous_word=input_previous_word,
                          dynamic_source_num_hidden=dynamic_source_num_hidden)
@@ -606,7 +618,10 @@ class MlpAttention(Attention):
         # layer normalization
         self._ln = layers.LayerNormalization(num_hidden=attention_num_hidden,
                                              prefix="%snorm" % self.prefix) if layer_normalization else None
-
+        self.alignment_assisted = alignment_assisted
+        self.alignment_layer = Alignment(input_previous_word) if alignment_assisted > 0.0 else None
+        
+        self.alignment_func = None
 
     def on(self, source: mx.sym.Symbol, source_length: mx.sym.Symbol, source_seq_len: int) -> Callable:
         """
@@ -635,6 +650,10 @@ class MlpAttention(Attention):
         #self.debug_attention_hidden_after_bias = [None] * 100
         #self.align_bias_prob = mx.sym.uniform(low=0, high=1, shape=1)
         self.align_bias_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
+
+        if self.alignment_layer:
+            self.align_assisted_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
+            self.alignment_func = self.alignment_layer.on(source,source_length,source_seq_len)
 
         def attend(att_input: AttentionInput, att_state: AttentionState,
                    alignment: mx.sym.Symbol = None) -> AttentionState:
@@ -715,6 +734,14 @@ class MlpAttention(Attention):
                 dynamic_source = coverage_func(prev_hidden=att_input.query,
                                                attention_prob_scores=attention_probs,
                                                prev_coverage=att_state.dynamic_source)
+
+            if self.alignment_layer:
+                align_context = self.alignment_func(att_input, att_state, alignment).context
+                extended_context = mx.sym.where(self.alignment_assisted > self.align_assisted_prob,
+                                                align_context,
+                                                mx.sym.zeros_like(align_context))
+                context = mx.sym.concat(context, extended_context)
+
 
             return AttentionState(context=context,
                                   probs=attention_probs,

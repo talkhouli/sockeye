@@ -581,7 +581,7 @@ class RecurrentDecoder(Decoder):
                                                 attention_state,
                                                 seq_idx,
                                                 alignment_slice)
-            self.debug_attention.append(attention_state.probs)
+            self.debug_attention.append(attention_state.context)
 
             # hidden_expanded: (batch_size, 1, rnn_num_hidden)
             hidden_all.append(mx.sym.expand_dims(data=state.hidden, axis=1))

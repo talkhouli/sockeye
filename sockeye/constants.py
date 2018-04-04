@@ -230,7 +230,9 @@ ARGS_STATE_NAME = "args.json"
 # Arguments that may differ and still resume training
 ARGS_MAY_DIFFER = ["overwrite_output", "use-tensorboard", "quiet",
                    "align_plot_prefix", "sure_align_threshold",
-                   "keep_last_params"]
+                   "keep_last_params", "source", 
+                   "target", "alignment", "validation_source",
+                   "validation_target", "validation_alignment"]
 
 # Other argument constants
 INFERENCE_ARG_INPUT_LONG = "--input"

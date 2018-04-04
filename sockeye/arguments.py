@@ -574,6 +574,13 @@ def add_model_parameters(params):
                               default=0.0,
                               help="alignment bias rate during training. Default: %(default)s.")
 
+    model_params.add_argument('--alignment-assisted',
+                              type=float,
+                              default=0.0,
+                              help="concatenate source context selected using alignment with"
+                                   "attention-weighted context. Value determines how often"
+                                   "this takes place during training. Default: %(default)s.")
+
 
 def add_training_args(params):
     train_params = params.add_argument_group("Training parameters")
