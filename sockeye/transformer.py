@@ -19,6 +19,7 @@ import numpy as np
 import config
 import constants as C
 import layers
+import utils
 
 
 class TransformerConfig(config.Config):
@@ -38,6 +39,7 @@ class TransformerConfig(config.Config):
                  max_seq_len_source: int,
                  max_seq_len_target: int,
                  alignment_assisted: float = 0.0,
+                 alignment_model: bool = False,
                  conv_config: Optional['ConvolutionalEmbeddingConfig'] = None) -> None:  # type: ignore
         super().__init__()
         self.model_size = model_size
@@ -55,6 +57,7 @@ class TransformerConfig(config.Config):
         self.max_seq_len_target = max_seq_len_target
         self.alignment_assisted = alignment_assisted
         self.conv_config = conv_config
+        self.alignment_model = alignment_model
 
 
 class TransformerEncoderBlock:
@@ -117,7 +120,15 @@ class TransformerDecoderBlock:
     def __init__(self,
                  config: TransformerConfig,
                  prefix: str) -> None:
+
+        utils.check_condition(not config.alignment_model or config.alignment_assisted > 0.0,
+                              "--alignment-assisted must be greater 0.0 for alignment models")
+
         self.prefix = prefix
+        self.alignment_model = config.alignment_model
+        self.alignment_assisted = config.alignment_assisted
+
+
         self.pre_self_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                           num_hidden=config.model_size,
                                                           dropout=config.dropout_prepost,
@@ -132,19 +143,25 @@ class TransformerDecoderBlock:
                                                            dropout=config.dropout_prepost,
                                                            prefix="%satt_self_post_" % prefix)
 
-        self.pre_enc_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
-                                                         num_hidden=config.model_size,
-                                                         dropout=config.dropout_prepost,
-                                                         prefix="%satt_enc_pre_" % prefix)
-        self.enc_attention = layers.MultiHeadAttention(depth_att=config.model_size,
+        if not config.alignment_model:
+            self.pre_enc_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
+                                                             num_hidden=config.model_size,
+                                                             dropout=config.dropout_prepost,
+                                                             prefix="%satt_enc_pre_" % prefix)
+            self.enc_attention = layers.MultiHeadAttention(depth_att=config.model_size,
                                                        heads=config.attention_heads,
                                                        depth_out=config.model_size,
                                                        dropout=config.dropout_attention,
                                                        prefix="%satt_enc_" % prefix)
 
-        self.alignment_assisted = config.alignment_assisted
+        else:
+            self.pre_enc_attention = None
+            self.enc_attention = None
+
         if self.alignment_assisted > 0.0:
-            self.alignment_head = layers.Alignment(num_hidden=config.model_size // config.attention_heads,
+            # use full model size in case of alignment model to match target embedding
+            alignment_head_size = config.model_size // config.attention_heads if not self.alignment_model else config.model_size
+            self.alignment_head = layers.Alignment(num_hidden=alignment_head_size,
                                                    alignment_assisted=config.alignment_assisted,
                                                    prefix="%salign_head_" % prefix)
         else:
@@ -195,7 +212,8 @@ class TransformerDecoderBlock:
         target_enc_att = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,
                                             bias=source_bias,
-                                            additional_head=align_context)
+                                            additional_head=align_context) \
+            if not self.alignment_model else align_context
 
         target = self.post_enc_attention(target_enc_att, target)
 

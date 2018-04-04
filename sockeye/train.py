@@ -422,6 +422,7 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             max_seq_len_source=max_seq_len_source,
             max_seq_len_target=max_seq_len_target,
             alignment_assisted=args.alignment_assisted,
+            alignment_model=args.output_classes == C.ALIGNMENT_JUMP,
             conv_config=None)
 
     elif args.decoder == C.CONVOLUTION_TYPE:
