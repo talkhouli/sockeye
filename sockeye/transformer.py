@@ -37,7 +37,7 @@ class TransformerConfig(config.Config):
                  postprocess_sequence: str,
                  max_seq_len_source: int,
                  max_seq_len_target: int,
-                 alignment_assisted: float = 1.0, # TODO change to 0.0
+                 alignment_assisted: float = 0.0,
                  conv_config: Optional['ConvolutionalEmbeddingConfig'] = None) -> None:  # type: ignore
         super().__init__()
         self.model_size = model_size
@@ -142,10 +142,14 @@ class TransformerDecoderBlock:
                                                        dropout=config.dropout_attention,
                                                        prefix="%satt_enc_" % prefix)
 
-        self.alignment_head = layers.AlignmentAttention(num_hidden=config.model_size//config.attention_heads,
+        self.alignment_assisted = config.alignment_assisted
+        if self.alignment_assisted > 0.0:
+            self.alignment_head = layers.AlignmentAttention(num_hidden=config.model_size//config.attention_heads,
                                                         alignment_assisted=config.alignment_assisted,
                                                         prefix="%salign_head_" % prefix)
-        self.alignment_assisted = config.alignment_assisted
+        else:
+            self.alignment_head = None
+
 
         self.post_enc_attention = TransformerProcessBlock(sequence=config.postprocess_sequence,
                                                           num_hidden=config.model_size,
