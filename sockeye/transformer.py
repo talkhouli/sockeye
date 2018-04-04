@@ -144,9 +144,9 @@ class TransformerDecoderBlock:
 
         self.alignment_assisted = config.alignment_assisted
         if self.alignment_assisted > 0.0:
-            self.alignment_head = layers.AlignmentAttention(num_hidden=config.model_size//config.attention_heads,
-                                                        alignment_assisted=config.alignment_assisted,
-                                                        prefix="%salign_head_" % prefix)
+            self.alignment_head = layers.Alignment(num_hidden=config.model_size // config.attention_heads,
+                                                   alignment_assisted=config.alignment_assisted,
+                                                   prefix="%salign_head_" % prefix)
         else:
             self.alignment_head = None
 

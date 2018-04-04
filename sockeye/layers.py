@@ -522,7 +522,7 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                             additional_head=additional_head)
 
 
-class AlignmentAttention:
+class Alignment:
     def __init__(self,
                  prefix: str,
                  num_hidden: int,
