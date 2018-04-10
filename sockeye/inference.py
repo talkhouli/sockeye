@@ -904,7 +904,7 @@ class Translator:
         else:
             target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
                                 if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
-                                    np.argmax(translation.attention_matrix[i + 1]) < len(tran13dsslation.source) else token
+                                    np.argmax(translation.attention_matrix[i + 1]) < len(translation.source) else token
                              for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
             target_token for target_id, target_token in zip(target_ids, target_tokens) if
