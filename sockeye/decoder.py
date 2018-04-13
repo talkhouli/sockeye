@@ -186,6 +186,10 @@ class TransformerDecoder(Decoder):
         utils.check_condition(len(config.alignment_assisted) == 1 or len(config.alignment_assisted) == config.num_layers,
                               "--alignment-assisted must be a single float or a list of floats for each layer")
         self.alignment_assisted = config.alignment_assisted if len(config.alignment_assisted) > 1 else config.alignment_assisted * config.num_layers
+        utils.check_condition(not config.alignment_model or
+                any([x > 0.0 for x in self.alignment_assisted]),
+                "--alignment-assisted must be greater 0.0 for alignment models")
+
         self.layers = [transformer.TransformerDecoderBlock(
             config, prefix="%s%d_" % (prefix, i), alignment_assisted=self.alignment_assisted[i]) for i in range(config.num_layers)]
         self.final_process = transformer.TransformerProcessBlock(sequence=config.preprocess_sequence,

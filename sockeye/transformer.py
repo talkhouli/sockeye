@@ -122,8 +122,8 @@ class TransformerDecoderBlock:
                  prefix: str,
                  alignment_assisted: bool = False) -> None:
 
-        utils.check_condition(not config.alignment_model or alignment_assisted > 0.0,
-                              "--alignment-assisted must be greater 0.0 for alignment models")
+        #utils.check_condition(not config.alignment_model or alignment_assisted > 0.0,
+        #                      "--alignment-assisted must be greater 0.0 for alignment models")
 
         self.prefix = prefix
         self.alignment_model = config.alignment_model
