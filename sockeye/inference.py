@@ -1244,7 +1244,7 @@ class Translator:
 
         #initial alignments set to -1
         alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,max_output_length),dtype='int32') -1
-
+        alignment_based = any([model.alignment_based for model in self.models])
         logger.info("source length: %d",actual_source_length)
         for t in range(1, max_output_length):
 
@@ -1329,8 +1329,9 @@ class Translator:
                                           mx.ndarray.one_hot(best_hyp_pos_indices, depth=source_length, dtype='int32'))
 
             #(7) update previous alignment
-            alignment = mx.nd.take(alignment,best_hyp_indices)
-            alignment[:,t] =  best_hyp_pos_indices
+            if alignment_based:
+                alignment = mx.nd.take(alignment,best_hyp_indices)
+                alignment[:,t] =  best_hyp_pos_indices
 
             # (8) determine which hypotheses in the beam are now finished
             finished = ((best_word_indices == C.PAD_ID) + (best_word_indices == self.vocab_target[C.EOS_SYMBOL]))
