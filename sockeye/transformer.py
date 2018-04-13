@@ -215,6 +215,9 @@ class TransformerDecoderBlock:
                                             additional_head=align_context) \
             if not self.alignment_model else align_context
 
+        if target_enc_att is None:
+            target_enc_att = mx.sym.zeros_like(data=target, name="%szeros_target_enc_att" % self.prefix)
+
         target = self.post_enc_attention(target_enc_att, target)
 
         # feed-forward
