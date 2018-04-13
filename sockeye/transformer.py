@@ -122,7 +122,7 @@ class TransformerDecoderBlock:
                  prefix: str,
                  alignment_assisted: bool = False) -> None:
 
-        utils.check_condition(not config.alignment_model or config.alignment_assisted > 0.0,
+        utils.check_condition(not config.alignment_model or alignment_assisted > 0.0,
                               "--alignment-assisted must be greater 0.0 for alignment models")
 
         self.prefix = prefix
@@ -143,7 +143,7 @@ class TransformerDecoderBlock:
                                                            dropout=config.dropout_prepost,
                                                            prefix="%satt_self_post_" % prefix)
 
-        if not config.alignment_model:
+        if not self.alignment_model:
             self.pre_enc_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                              num_hidden=config.model_size,
                                                              dropout=config.dropout_prepost,
