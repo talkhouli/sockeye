@@ -119,15 +119,15 @@ class TransformerDecoderBlock:
 
     def __init__(self,
                  config: TransformerConfig,
-                 prefix: str) -> None:
+                 prefix: str,
+                 alignment_assisted: bool = False) -> None:
 
         utils.check_condition(not config.alignment_model or config.alignment_assisted > 0.0,
                               "--alignment-assisted must be greater 0.0 for alignment models")
 
         self.prefix = prefix
         self.alignment_model = config.alignment_model
-        self.alignment_assisted = config.alignment_assisted
-
+        self.alignment_assisted = alignment_assisted
 
         self.pre_self_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                           num_hidden=config.model_size,
@@ -162,7 +162,7 @@ class TransformerDecoderBlock:
             # use full model size in case of alignment model to match target embedding
             alignment_head_size = config.model_size // config.attention_heads if not self.alignment_model else config.model_size
             self.alignment_head = layers.Alignment(num_hidden=alignment_head_size,
-                                                   alignment_assisted=config.alignment_assisted,
+                                                   alignment_assisted=self.alignment_assisted,
                                                    prefix="%salign_head_" % prefix)
         else:
             self.alignment_head = None
