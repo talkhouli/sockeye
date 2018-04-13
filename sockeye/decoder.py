@@ -183,9 +183,13 @@ class TransformerDecoder(Decoder):
                  prefix: str = C.TRANSFORMER_DECODER_PREFIX) -> None:
         self.config = config
         self.prefix = prefix
-        utils.check_condition(len(config.alignment_assisted) == 1 or len(config.alignment_assisted) == config.num_layers,
+        if isinstance(config.alignment_assisted, list):
+            utils.check_condition(len(config.alignment_assisted) == 1 or len(config.alignment_assisted) == config.num_layers,
                               "--alignment-assisted must be a single float or a list of floats for each layer")
-        self.alignment_assisted = config.alignment_assisted if len(config.alignment_assisted) > 1 else config.alignment_assisted * config.num_layers
+            self.alignment_assisted = config.alignment_assisted if len(config.alignment_assisted) > 1 else config.alignment_assisted * config.num_layers
+        else:
+            self.alignment_assisted = [config.alignment_assisted] * config.num_layers
+
         utils.check_condition(not config.alignment_model or
                 any([x > 0.0 for x in self.alignment_assisted]),
                 "--alignment-assisted must be greater 0.0 for alignment models")
