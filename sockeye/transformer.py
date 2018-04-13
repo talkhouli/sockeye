@@ -120,7 +120,8 @@ class TransformerDecoderBlock:
     def __init__(self,
                  config: TransformerConfig,
                  prefix: str,
-                 alignment_assisted: bool = False) -> None:
+                 alignment_assisted: bool = False,
+                 align_assisted_prob: mx.sym.Symbol = None) -> None:
 
         #utils.check_condition(not config.alignment_model or alignment_assisted > 0.0,
         #                      "--alignment-assisted must be greater 0.0 for alignment models")
@@ -163,6 +164,7 @@ class TransformerDecoderBlock:
             alignment_head_size = config.model_size // config.attention_heads if not self.alignment_model else config.model_size
             self.alignment_head = layers.Alignment(num_hidden=alignment_head_size,
                                                    alignment_assisted=self.alignment_assisted,
+                                                   align_assisted_prob=align_assisted_prob,
                                                    prefix="%salign_head_" % prefix)
         else:
             self.alignment_head = None

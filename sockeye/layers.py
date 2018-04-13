@@ -526,14 +526,15 @@ class Alignment:
     def __init__(self,
                  prefix: str,
                  num_hidden: int,
-                 alignment_assisted: float = 0.5) -> None:
+                 alignment_assisted: float = 0.5,
+                 align_assisted_prob: mx.sym.Symbol = None) -> None:
         self.prefix = prefix
         self.num_hidden = num_hidden
         self.alignment_assisted = alignment_assisted
 
         self.w_a2h = mx.sym.Variable(name="%sa2h_weight" % prefix)
         self.b_a2h = mx.sym.Variable(name="%sa2h_bias" % prefix)
-        self.align_assisted_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
+        self.align_assisted_prob = align_assisted_prob if align_assisted_prob is not None else mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
 
     def __call__(self,
                  source: mx.sym.Symbol,

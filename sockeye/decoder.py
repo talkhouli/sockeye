@@ -190,8 +190,12 @@ class TransformerDecoder(Decoder):
                 any([x > 0.0 for x in self.alignment_assisted]),
                 "--alignment-assisted must be greater 0.0 for alignment models")
 
+        self.align_assisted_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
         self.layers = [transformer.TransformerDecoderBlock(
-            config, prefix="%s%d_" % (prefix, i), alignment_assisted=self.alignment_assisted[i]) for i in range(config.num_layers)]
+            config,
+            prefix="%s%d_" % (prefix, i),
+            alignment_assisted=self.alignment_assisted[i],
+            align_assisted_prob=self.align_assisted_prob) for i in range(config.num_layers)]
         self.final_process = transformer.TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                                  num_hidden=config.model_size,
                                                                  dropout=config.dropout_prepost,
