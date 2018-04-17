@@ -456,7 +456,9 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
                                                          config_coverage=config_coverage,
                                                          num_heads=args.rnn_attention_mhdot_heads,
                                                          alignment_bias=args.alignment_bias,
-                                                         alignment_assisted=args.alignment_assisted)
+                                                         alignment_assisted=args.alignment_assisted,
+                                                         alignment_interpolation=args.alignment_interpolation,
+                                                         dynamic_alignment_interpolation = args.dynamic_alignment_interpolation)
 
         _, decoder_rnn_dropout_inputs = args.rnn_dropout_inputs
         _, decoder_rnn_dropout_states = args.rnn_dropout_states

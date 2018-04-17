@@ -42,6 +42,7 @@ class AttentionConfig(config.Config):
     :param num_heads: Number of attention heads. Only used for Multi-head dot attention.
     :param alignment_bias: rate of using alignment bias in training (applied batch-wise)
     :param alignment_assisted: concat source context selected using alignment with attention-weighted source context
+    :param alignment_interpolation: flag for interpolation between attention and alignment distributions
     """
     def __init__(self,
                  type: str,
@@ -53,7 +54,9 @@ class AttentionConfig(config.Config):
                  config_coverage: Optional[coverage.CoverageConfig] = None,
                  num_heads: Optional[int] = None,
                  alignment_bias: bool = False,
-                 alignment_assisted: float = 0.0) -> None:
+                 alignment_assisted: float = 0.0,
+                 alignment_interpolation: bool = False,
+                 dynamic_alignment_interpolation: bool = False) -> None:
         super().__init__()
         self.type = type
         self.num_hidden = num_hidden
@@ -65,6 +68,8 @@ class AttentionConfig(config.Config):
         self.num_heads = num_heads
         self.alignment_bias = alignment_bias
         self.alignment_assisted = alignment_assisted
+        self.alignment_interpolation = alignment_interpolation
+        self.dynamic_alignment_interpolation = dynamic_alignment_interpolation
 
 
 def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
@@ -99,7 +104,9 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
                             attention_num_hidden=config.num_hidden,
                             layer_normalization=config.layer_normalization,
                             alignment_bias=config.alignment_bias,
-                            alignment_assisted=config.alignment_assisted)
+                            alignment_assisted=config.alignment_assisted,
+                            alignment_interpolation = config.alignment_interpolation,
+                            dynamic_alignment_interpolation=config.dynamic_alignment_interpolation)
     elif config.type == C.ATT_ALIGNMENT:
         return Alignment(input_previous_word=config.input_previous_word)
     elif config.type == C.ATT_COV:
@@ -108,7 +115,9 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
                             layer_normalization=config.layer_normalization,
                             config_coverage=config.config_coverage,
                             alignment_bias=config.alignment_bias,
-                            alignment_assisted=config.alignment_assisted)
+                            alignment_assisted=config.alignment_assisted,
+                            alignment_interpolation=config.alignment_interpolation,
+                            dynamic_alignment_interpolation=config.dynamic_alignment_interpolation)
     else:
         raise ValueError("Unknown attention type %s" % config.type)
 
@@ -588,6 +597,7 @@ class MlpAttention(Attention):
                             the whole batch.
     :param alignment_assisted: Optional boolean value to determine whether to concatenate the source context selected
                                 using external hard alignment with the attention-weighted source context
+    :param alignment_interpolation: Optional boolean value to set interpolation between alignment and attention distributions
     """
 
     def __init__(self,
@@ -596,7 +606,9 @@ class MlpAttention(Attention):
                  layer_normalization: bool = False,
                  config_coverage: Optional[coverage.CoverageConfig] = None,
                  alignment_bias: float = 0.0,
-                 alignment_assisted: float = 0.0) -> None:
+                 alignment_assisted: float = 0.0,
+                 alignment_interpolation: bool = False,
+                 dynamic_alignment_interpolation: bool = False) -> None:
         dynamic_source_num_hidden = 1 if config_coverage is None else config_coverage.num_hidden
         super().__init__(input_previous_word=input_previous_word,
                          dynamic_source_num_hidden=dynamic_source_num_hidden)
@@ -612,6 +624,11 @@ class MlpAttention(Attention):
         #alignment bias
         self.alignment_bias = alignment_bias
         self.att_align_bias = mx.sym.Variable("%salign_bias" % self.prefix, shape=(attention_num_hidden,)) if alignment_bias else None
+        self.att_align_interp_weight = mx.sym.Variable("%satt_align_interp_weight" % self.prefix, shape=(1,2),init=mx.init.Constant(0.5)) \
+                                            if alignment_interpolation else None
+        self.att_align_dynamic_interp_weight = mx.sym.Variable("%satt_align_dynamic_interp_weight" % self.prefix, shape=(1, 2),
+                                                       init=mx.init.Constant(0.5)) \
+                                            if dynamic_alignment_interpolation else None
         # dynamic source (coverage) weights and settings
         # input (coverage) to hidden
         self.att_c2h_weight = mx.sym.Variable("%sc2h_weight" % self.prefix) if config_coverage is not None else None
@@ -620,6 +637,8 @@ class MlpAttention(Attention):
                                              prefix="%snorm" % self.prefix) if layer_normalization else None
         self.alignment_assisted = alignment_assisted
         self.alignment_layer = Alignment(input_previous_word) if alignment_assisted > 0.0 else None
+        self.alignment_interpolation = alignment_interpolation
+        self.dynamic_alignment_interpolation = dynamic_alignment_interpolation
         
         self.alignment_func = None
 
@@ -644,11 +663,7 @@ class MlpAttention(Attention):
                                               no_bias=True,
                                               flatten=False,
                                               name="%ssource_hidden_fc" % self.prefix)
-        #self.debug_cnt =0
-        #self.debug_alignment_one_hot = [None] * 100
-        #self.debug_attention_hidden_before_bias = [None] * 100
-        #self.debug_attention_hidden_after_bias = [None] * 100
-        #self.align_bias_prob = mx.sym.uniform(low=0, high=1, shape=1)
+
         self.align_bias_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
 
         if self.alignment_layer:
@@ -741,6 +756,16 @@ class MlpAttention(Attention):
                                                 align_context,
                                                 mx.sym.zeros_like(align_context))
                 context = mx.sym.concat(context, extended_context)
+            elif self.alignment_interpolation:
+                context,attention_probs = self.get_context_and_align_interp_attention_probs(source, source_length,
+                                                                                            attention_scores,
+                                                                                            alignment,
+                                                                                            source_seq_len)
+            elif self.dynamic_alignment_interpolation:
+                context, attention_probs = self.get_context_and_align_dynamic_interp_attention_probs(source, source_length,
+                                                                                             attention_scores,
+                                                                                             alignment,
+                                                                                             source_seq_len)
 
 
             return AttentionState(context=context,
@@ -748,6 +773,127 @@ class MlpAttention(Attention):
                                   dynamic_source=dynamic_source)
 
         return attend
+
+    def get_context_and_align_dynamic_interp_attention_probs(self, values: mx.sym.Symbol,
+                                                         length: mx.sym.Symbol,
+                                                         logits: mx.sym.Symbol,
+                                                         alignment: mx.sym.Symbol,
+                                                         source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
+
+
+            """
+            Returns context vector and attention probabilities after interpolation with alignment distribution
+
+            :param values: Shape: (batch_size, seq_len, encoder_num_hidden).
+            :param length: Shape: (batch_size,).
+            :param logits: Shape: (batch_size, seq_len, 1).
+            :param alignment: Shape: (batch_size,)
+            :return: context: (batch_size, encoder_num_hidden), attention_probs: (batch_size, seq_len).
+            """
+            # (batch_size, seq_len, 1)
+            logits = mask_attention_scores(logits, length)
+
+            # (batch_size, seq_len, 1)
+            probs = mx.sym.softmax(logits, axis=1, name='attention_softmax')
+
+            # (batch_size, 1, seq_len)
+            alignment_one_hot = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+
+            # (batch_size,seq_len, 1)
+            alignment_one_hot = mx.sym.swapaxes(alignment_one_hot, 1, 2)
+
+            # (batch_size,seq_len,1)
+            attention_align_sum = probs + alignment_one_hot
+
+            #(batch_size,seq_len,2)
+            attention_align_concat = mx.sym.concat(probs,alignment_one_hot,dim=2)
+            # (batch_size*seq_len,2)
+            attention_align_concat = mx.sym.reshape(data=attention_align_concat, shape=(-3,0))
+
+            # (batch_size*seq_len,1)
+            attention_align_sum = mx.sym.reshape(data=attention_align_sum, shape=(-3,0))
+
+            # (batch_size*seq_len,2)
+            interp_raw_scores = mx.sym.linalg_gemm2(attention_align_sum,self.att_align_dynamic_interp_weight)
+            interp_raw_scores = mx.sym.sigmoid(interp_raw_scores)
+
+            # (batch_size*seq_len,1,2)
+            interp_raw_scores = mx.sym.expand_dims(data=interp_raw_scores, axis=1)
+            # (batch_size*seq_len,2,1)
+            attention_align_concat = mx.sym.expand_dims(data=attention_align_concat,axis=2)
+
+            # (batch_size*seq_len,1,1)
+            interp_raw_scores = mx.sym.batch_dot(lhs=interp_raw_scores, rhs=attention_align_concat, transpose_a=False)
+
+            # (batch_size,seq_len,1)
+            interp_raw_scores = mx.sym.reshape_like(lhs=interp_raw_scores,rhs=probs)
+
+            interp_raw_scores = mask_attention_scores(interp_raw_scores, length)
+
+            # (batch_size, seq_len, 1)
+            probs = mx.sym.softmax(interp_raw_scores, axis=1, name='attention_align_interp_softmax')
+
+            # batch_dot: (batch, M, K) X (batch, K, N) –> (batch, M, N).
+            # (batch_size, seq_len, num_hidden) X (batch_size, seq_len, 1) -> (batch_size, num_hidden, 1)
+            context = mx.sym.batch_dot(lhs=values, rhs=probs, transpose_a=True)
+            # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
+            context = mx.sym.reshape(data=context, shape=(0, 0))
+            probs = mx.sym.reshape(data=probs, shape=(0, 0))
+
+            return context, probs
+
+    def get_context_and_align_interp_attention_probs(self,  values: mx.sym.Symbol,
+                                                            length: mx.sym.Symbol,
+                                                            logits: mx.sym.Symbol,
+                                                            alignment: mx.sym.Symbol,
+                                                            source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
+
+
+            """
+            Returns context vector and attention probabilities after interpolation with alignment distribution
+
+            :param values: Shape: (batch_size, seq_len, encoder_num_hidden).
+            :param length: Shape: (batch_size,).
+            :param logits: Shape: (batch_size, seq_len, 1).
+            :param alignment: Shape: (batch_size,)
+            :return: context: (batch_size, encoder_num_hidden), attention_probs: (batch_size, seq_len).
+            """
+            # (batch_size, seq_len, 1)
+            logits = mask_attention_scores(logits, length)
+
+            # (batch_size, seq_len, 1)
+            probs = mx.sym.softmax(logits, axis=1, name='attention_softmax')
+
+            #(batch_size, 1, seq_len)
+            alignment_one_hot = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+
+            # (batch_size,seq_len, 1)
+            alignment_one_hot = mx.sym.swapaxes(alignment_one_hot,1,2)
+
+            #(batch_size,seq_len,2)
+            attention_align_concat = mx.sym.concat(probs,alignment_one_hot,dim=2)
+
+            #(batch_size,seq_len,1)
+            interp_raw_scores = mx.sym.FullyConnected(data=attention_align_concat,
+                                                     weight=self.att_align_interp_weight,
+                                                     num_hidden=1,
+                                                     no_bias=True,
+                                                     flatten=False,
+                                                     name="%sinterp_att_align_weight_fc" % self.prefix)
+            interp_raw_scores = mask_attention_scores(interp_raw_scores, length)
+
+
+            # (batch_size, seq_len, 1)
+            probs = mx.sym.softmax(interp_raw_scores, axis=1, name='attention_align_interp_softmax')
+
+            # batch_dot: (batch, M, K) X (batch, K, N) –> (batch, M, N).
+            # (batch_size, seq_len, num_hidden) X (batch_size, seq_len, 1) -> (batch_size, num_hidden, 1)
+            context = mx.sym.batch_dot(lhs=values, rhs=probs, transpose_a=True)
+            # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
+            context = mx.sym.reshape(data=context, shape=(0, 0))
+            probs = mx.sym.reshape(data=probs, shape=(0, 0))
+
+            return context, probs
 
 
 class Alignment(Attention):

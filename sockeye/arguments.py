@@ -580,6 +580,15 @@ def add_model_parameters(params):
                                    "attention-weighted context. Value determines how often"
                                    "this takes place during training. Default: %(default)s.")
 
+    model_params.add_argument('--alignment-interpolation',
+                              action='store_true',
+                              help='Turn on attention-alignment interpolation. Default: %(default)s.')
+
+    model_params.add_argument('--dynamic-alignment-interpolation',
+                              action='store_true',
+                              help='Turn on dynamic attention-alignment interpolation using position '
+                                   'dependent computed interpolation weights. Default: %(default)s.')
+
 
 def add_training_args(params):
     train_params = params.add_argument_group("Training parameters")
