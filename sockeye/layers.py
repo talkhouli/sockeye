@@ -551,6 +551,7 @@ class Alignment:
                                         num_hidden=self.num_hidden,
                                         flatten=False)
         context = mx.sym.where(self.alignment_assisted > self.align_assisted_prob, context, mx.sym.zeros_like(context))
+        context = mx.sym.Custom(op_type="InferenceScale", data=context, scalar=self.alignment_assisted)
         return context
 
 

@@ -762,6 +762,56 @@ class AlignBiasProbProp(mx.operator.CustomOpProp):
     def create_operator(self, ctx, shapes, dtypes):
         return AlignBiasProb(low=self.low, high=self.high)
 
+class InferenceScale(mx.operator.CustomOp):
+    """
+    Custom operator that takes a symbol, prints its value to stdout and
+    propagates the value unchanged. Useful for debugging.
+
+    Use it as:
+    my_sym = mx.sym.Custom(op_type="PrintValue", data=my_sym, print_name="My symbol")
+
+    Additionally you can use the optional arguments 'use_logger=True' for using
+    the system logger and 'print_grad=True' for printing information about the
+    gradient (out_grad, i.e. "upper part" of the graph).
+    """
+    def __init__(self, scalar: float):
+        super().__init__()
+        self.scalar = float(scalar)
+
+    def forward(self, is_train, req, in_data, out_data, aux):
+        if not is_train:
+            scaled = self.scalar * in_data[0]
+            self.assign(out_data[0], req[0], scaled)
+        else:
+            self.assign(out_data[0], req[0], in_data[0])
+
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        self.assign(in_grad[0], req[0], out_grad[0])
+
+
+@mx.operator.register("InferenceScale")
+class InferenceScaleProp(mx.operator.CustomOpProp):
+    def __init__(self, scalar: float):
+        super().__init__(need_top_grad=True)
+        self.scalar = float(scalar)
+
+    def list_arguments(self):
+        return ["data"]
+
+    def list_outputs(self):
+        return ["output"]
+
+    def infer_shape(self, in_shape):
+        return in_shape, in_shape, []
+
+    def infer_type(self, in_type):
+        return in_type, in_type, []
+
+    def create_operator(self, ctx, shapes, dtypes):
+        return InferenceScale(scalar=self.scalar)
+
+
 def grouper(iterable: Iterable, size: int) -> Iterable:
     """
     Collect data into fixed-length chunks or blocks without discarding underfilled chunks or padding them.
