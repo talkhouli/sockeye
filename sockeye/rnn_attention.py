@@ -625,10 +625,16 @@ class MlpAttention(Attention):
         self.alignment_bias = alignment_bias
         self.att_align_bias = mx.sym.Variable("%salign_bias" % self.prefix, shape=(attention_num_hidden,)) if alignment_bias else None
         self.att_align_interp_weight = mx.sym.Variable("%satt_align_interp_weight" % self.prefix, shape=(1,2),init=mx.init.Constant(0.5)) \
-                                            if alignment_interpolation else None
-        self.att_align_dynamic_interp_weight = mx.sym.Variable("%satt_align_dynamic_interp_weight" % self.prefix, shape=(1, 2),
-                                                       init=mx.init.Constant(0.5)) \
-                                            if dynamic_alignment_interpolation else None
+                                                    if alignment_interpolation else None
+        self.att_align_dynamic_interp_weight = mx.sym.Variable("%satt_align_dynamic_interp_weight" % self.prefix, shape=( attention_num_hidden,1)) \
+                                                    if dynamic_alignment_interpolation else None
+        self.att_dynamic_interp_weight = mx.sym.Variable("%satt_dynamic_interp_weight" % self.prefix,
+                                                               shape=(1, attention_num_hidden)) \
+                                                    if dynamic_alignment_interpolation else None
+
+        self.align_dynamic_interp_weight = mx.sym.Variable("%salign_dynamic_interp_weight" % self.prefix,
+                                                               shape=(1,attention_num_hidden)) \
+                                                    if dynamic_alignment_interpolation else None
         # dynamic source (coverage) weights and settings
         # input (coverage) to hidden
         self.att_c2h_weight = mx.sym.Variable("%sc2h_weight" % self.prefix) if config_coverage is not None else None
@@ -775,10 +781,145 @@ class MlpAttention(Attention):
         return attend
 
     def get_context_and_align_dynamic_interp_attention_probs(self, values: mx.sym.Symbol,
-                                                         length: mx.sym.Symbol,
-                                                         logits: mx.sym.Symbol,
-                                                         alignment: mx.sym.Symbol,
-                                                         source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
+                                                                 length: mx.sym.Symbol,
+                                                                 logits: mx.sym.Symbol,
+                                                                 alignment: mx.sym.Symbol,
+                                                                 source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
+
+
+        """
+        Returns context vector and attention probabilities after interpolation with alignment distribution
+        Softmax( lambda * attention_weights + (1-lambda) * alignment_one_hot)
+        where lambda = sigmoid ( V^T sigmoid ( W alignment + M attention_weights))
+
+        :param values: Shape: (batch_size, seq_len, encoder_num_hidden).
+        :param length: Shape: (batch_size,).
+        :param logits: Shape: (batch_size, seq_len, 1).
+        :param alignment: Shape: (batch_size,)
+        :return: context: (batch_size, encoder_num_hidden), attention_probs: (batch_size, seq_len).
+        """
+        # (batch_size, seq_len, 1)
+        logits = mask_attention_scores(logits, length)
+
+        # (batch_size, seq_len, 1)
+        probs = mx.sym.softmax(logits, axis=1, name='attention_softmax')
+
+        # (batch_size, 1, seq_len)
+        alignment_one_hot = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+
+        # (batch_size,seq_len, 1)
+        alignment_one_hot = mx.sym.swapaxes(alignment_one_hot, 1, 2)
+
+        # (batch_size*seq_len,1)
+        probs = mx.sym.reshape(data=probs, shape=(-3, 0))
+        # (batch_size*seq_len,num_hidden)
+        interp_lhs_raw = mx.sym.linalg_gemm2(probs, self.att_dynamic_interp_weight)
+
+        # (batch_size*seq_len,1)
+        alignment_one_hot = mx.sym.reshape(data=alignment_one_hot, shape=(-3, 0))
+        # (batch_size*seq_len,num_hidden)
+        interp_rhs_raw = mx.sym.linalg_gemm2(alignment_one_hot, self.align_dynamic_interp_weight)
+
+        interp_weights = mx.sym.sigmoid(interp_lhs_raw + interp_rhs_raw)
+
+        # (batch_size*seq_len,1)
+        interp_weights = mx.sym.linalg_gemm2(interp_weights,self.att_align_dynamic_interp_weight)
+        interp_weights = mx.sym.sigmoid(interp_weights)
+
+        interp_weights_complementary= 1 - interp_weights
+
+        interp_scores = interp_weights * probs + interp_weights_complementary * alignment_one_hot
+
+        # (batch_size,seq_len,1)
+        interp_scores = mx.sym.reshape_like(lhs=interp_scores, rhs=logits)
+
+        interp_scores = mask_attention_scores(interp_scores, length)
+        #(batch_size, seq_len, 1)
+        probs = mx.sym.softmax(interp_scores, axis=1, name='attention_align_interp_softmax')
+
+
+        # batch_dot: (batch, M, K) X (batch, K, N) –> (batch, M, N).
+        # (batch_size, seq_len, num_hidden) X (batch_size, seq_len, 1) -> (batch_size, num_hidden, 1)
+        context = mx.sym.batch_dot(lhs=values, rhs=probs, transpose_a=True)
+        # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
+        context = mx.sym.reshape(data=context, shape=(0, 0))
+        probs = mx.sym.reshape(data=probs, shape=(0, 0))
+
+        return context, probs
+
+    # def get_context_and_align_dynamic_interp_attention_probs(self, values: mx.sym.Symbol,
+    #                                                      length: mx.sym.Symbol,
+    #                                                      logits: mx.sym.Symbol,
+    #                                                      alignment: mx.sym.Symbol,
+    #                                                      source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
+    #
+    #
+    #         """
+    #         Returns context vector and attention probabilities after interpolation with alignment distribution
+    #
+    #         :param values: Shape: (batch_size, seq_len, encoder_num_hidden).
+    #         :param length: Shape: (batch_size,).
+    #         :param logits: Shape: (batch_size, seq_len, 1).
+    #         :param alignment: Shape: (batch_size,)
+    #         :return: context: (batch_size, encoder_num_hidden), attention_probs: (batch_size, seq_len).
+    #         """
+    #         # (batch_size, seq_len, 1)
+    #         logits = mask_attention_scores(logits, length)
+    #
+    #         # (batch_size, seq_len, 1)
+    #         probs = mx.sym.softmax(logits, axis=1, name='attention_softmax')
+    #
+    #         # (batch_size, 1, seq_len)
+    #         alignment_one_hot = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
+    #
+    #         # (batch_size,seq_len, 1)
+    #         alignment_one_hot = mx.sym.swapaxes(alignment_one_hot, 1, 2)
+    #
+    #         # (batch_size,seq_len,1)
+    #         attention_align_sum = probs + alignment_one_hot
+    #
+    #         #(batch_size,seq_len,2)
+    #         attention_align_concat = mx.sym.concat(probs,alignment_one_hot,dim=2)
+    #         # (batch_size*seq_len,2)
+    #         attention_align_concat = mx.sym.reshape(data=attention_align_concat, shape=(-3,0))
+    #
+    #         # (batch_size*seq_len,1)
+    #         attention_align_sum = mx.sym.reshape(data=attention_align_sum, shape=(-3,0))
+    #
+    #         # (batch_size*seq_len,2)
+    #         interp_raw_scores = mx.sym.linalg_gemm2(attention_align_sum,self.att_align_dynamic_interp_weight)
+    #         interp_raw_scores = mx.sym.sigmoid(interp_raw_scores)
+    #
+    #         # (batch_size*seq_len,1,2)
+    #         interp_raw_scores = mx.sym.expand_dims(data=interp_raw_scores, axis=1)
+    #         # (batch_size*seq_len,2,1)
+    #         attention_align_concat = mx.sym.expand_dims(data=attention_align_concat,axis=2)
+    #
+    #         # (batch_size*seq_len,1,1)
+    #         interp_raw_scores = mx.sym.batch_dot(lhs=interp_raw_scores, rhs=attention_align_concat, transpose_a=False)
+    #
+    #         # (batch_size,seq_len,1)
+    #         interp_raw_scores = mx.sym.reshape_like(lhs=interp_raw_scores,rhs=probs)
+    #
+    #         interp_raw_scores = mask_attention_scores(interp_raw_scores, length)
+    #
+    #         # (batch_size, seq_len, 1)
+    #         probs = mx.sym.softmax(interp_raw_scores, axis=1, name='attention_align_interp_softmax')
+    #
+    #         # batch_dot: (batch, M, K) X (batch, K, N) –> (batch, M, N).
+    #         # (batch_size, seq_len, num_hidden) X (batch_size, seq_len, 1) -> (batch_size, num_hidden, 1)
+    #         context = mx.sym.batch_dot(lhs=values, rhs=probs, transpose_a=True)
+    #         # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
+    #         context = mx.sym.reshape(data=context, shape=(0, 0))
+    #         probs = mx.sym.reshape(data=probs, shape=(0, 0))
+    #
+    #         return context, probs
+    
+    def get_context_and_align_plus_attention_probs(self,  values: mx.sym.Symbol,
+                                                            length: mx.sym.Symbol,
+                                                            logits: mx.sym.Symbol,
+                                                            alignment: mx.sym.Symbol,
+                                                            source_seq_len: int) -> Tuple[mx.sym.Symbol, mx.sym.Symbol]:
 
 
             """
@@ -796,42 +937,20 @@ class MlpAttention(Attention):
             # (batch_size, seq_len, 1)
             probs = mx.sym.softmax(logits, axis=1, name='attention_softmax')
 
-            # (batch_size, 1, seq_len)
+            #(batch_size, 1, seq_len)
             alignment_one_hot = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
 
             # (batch_size,seq_len, 1)
-            alignment_one_hot = mx.sym.swapaxes(alignment_one_hot, 1, 2)
-
-            # (batch_size,seq_len,1)
-            attention_align_sum = probs + alignment_one_hot
+            alignment_one_hot = mx.sym.swapaxes(alignment_one_hot,1,2)
 
             #(batch_size,seq_len,2)
-            attention_align_concat = mx.sym.concat(probs,alignment_one_hot,dim=2)
-            # (batch_size*seq_len,2)
-            attention_align_concat = mx.sym.reshape(data=attention_align_concat, shape=(-3,0))
+            attention_align_sum = alignment_one_hot + probs
 
-            # (batch_size*seq_len,1)
-            attention_align_sum = mx.sym.reshape(data=attention_align_sum, shape=(-3,0))
-
-            # (batch_size*seq_len,2)
-            interp_raw_scores = mx.sym.linalg_gemm2(attention_align_sum,self.att_align_dynamic_interp_weight)
-            interp_raw_scores = mx.sym.sigmoid(interp_raw_scores)
-
-            # (batch_size*seq_len,1,2)
-            interp_raw_scores = mx.sym.expand_dims(data=interp_raw_scores, axis=1)
-            # (batch_size*seq_len,2,1)
-            attention_align_concat = mx.sym.expand_dims(data=attention_align_concat,axis=2)
-
-            # (batch_size*seq_len,1,1)
-            interp_raw_scores = mx.sym.batch_dot(lhs=interp_raw_scores, rhs=attention_align_concat, transpose_a=False)
-
-            # (batch_size,seq_len,1)
-            interp_raw_scores = mx.sym.reshape_like(lhs=interp_raw_scores,rhs=probs)
-
-            interp_raw_scores = mask_attention_scores(interp_raw_scores, length)
+            attention_align_sum = mask_attention_scores(attention_align_sum, length)
 
             # (batch_size, seq_len, 1)
-            probs = mx.sym.softmax(interp_raw_scores, axis=1, name='attention_align_interp_softmax')
+            probs = mx.sym.softmax(attention_align_sum, axis=1,
+                    name='attention_plus_align_softmax')
 
             # batch_dot: (batch, M, K) X (batch, K, N) –> (batch, M, N).
             # (batch_size, seq_len, num_hidden) X (batch_size, seq_len, 1) -> (batch_size, num_hidden, 1)
@@ -880,6 +999,7 @@ class MlpAttention(Attention):
                                                      no_bias=True,
                                                      flatten=False,
                                                      name="%sinterp_att_align_weight_fc" % self.prefix)
+
             interp_raw_scores = mask_attention_scores(interp_raw_scores, length)
 
 
