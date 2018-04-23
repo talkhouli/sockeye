@@ -132,7 +132,7 @@ def process_alignments(alignments,
             # Process multiply aligned target
             if isinstance(alignments[l][t], list):
                 if multiply_aligned_target == "bbn":
-                    center = len(alignments[l][t]) // 2
+                    center = (len(alignments[l][t]) + 1) // 2
                     alignments[l][t] = alignments[l][t][center]
                 elif multiply_aligned_target == "keep":
                     pass
