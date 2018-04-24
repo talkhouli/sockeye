@@ -119,10 +119,10 @@ def process_alignments(alignments,
                 elif unaligned_target == "bbn":
                     i = 0
                     while alignments[l][t] == -1:
-                        if t - i >= 0 and alignments[l][t - i] != -1:
-                            alignments[l][t] = alignments[l][t - i]
-                        elif t + i < len(alignments[l]) and alignments[l][t + i] != -1:
+                        if t + i < len(alignments[l]) and alignments[l][t + i] != -1:
                             alignments[l][t] = alignments[l][t + i]
+                        elif t - i >= 0 and alignments[l][t - i] != -1:
+                            alignments[l][t] = alignments[l][t - i]
                         i += 1
                 elif unaligned_target == "eps":
                     alignments[l][t] = eps_index
@@ -132,7 +132,7 @@ def process_alignments(alignments,
             # Process multiply aligned target
             if isinstance(alignments[l][t], list):
                 if multiply_aligned_target == "bbn":
-                    center = (len(alignments[l][t]) + 1) // 2
+                    center = (len(alignments[l][t])) // 2
                     alignments[l][t] = alignments[l][t][center]
                 elif multiply_aligned_target == "keep":
                     pass
