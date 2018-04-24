@@ -46,21 +46,10 @@ def read_sentences(path):
     return sentences
 
 
-def read_alignment_file(path, trg_lengths, src_lengths):
-    """
-    read flat alignment file
-    :param path: path to alignment file
-    :param trg_lengths: array of target lengths (for each sentence)
-    :param src_lengths: array of source lengths (for each sentence)
-    :return: array of alignments (unprocessed)
-    """
-    check_condition(len(trg_lengths) == len(src_lengths), "source and target sentences must be parallel")
-    file = smart_open(path)
-    content = file.readlines()
-    check_condition(len(content) == len(trg_lengths), "alignment mst be parallel")
+def _read_flat_alignment_file(content, trg_lengths):
     alignments = [] * len(trg_lengths)
     for l, line in enumerate(content):
-        alignment = [-1]*(trg_lengths[l])
+        alignment = [-1] * (trg_lengths[l])
         source = -1
 
         for i, token in enumerate(line.strip().split(" ")):
@@ -87,7 +76,74 @@ def read_alignment_file(path, trg_lengths, src_lengths):
 
         alignments.append(alignment)
 
+    check_condition(len(alignments) == len(trg_lengths), "alignment mst be parallel")
     return alignments
+
+
+def _read_multiline_alignment_file(content, trg_lengths):
+    alignments = []
+    alignment = []
+    sentence = -1
+    for l, line in enumerate(content):
+        if line.startswith("SENT: "):
+            token = line[6:]
+            check_condition(is_int(token), "expected int for sentence number")
+            sentence = int(token)
+            check_condition(sentence < len(trg_lengths), "alignment mst be parallel")
+            if len(alignment) > 0:
+                alignments.append(alignment)
+
+            alignment = [-1]*trg_lengths[sentence]
+        elif line.startswith("S"):
+            for i, token in enumerate(line.strip().split(" ")):
+                if i % 3 == 0:
+                    check_condition(token == "S", "Wrong alignment format: expected S 0 0. Got token %s" % token)
+                    continue
+
+                if i % 3 == 1:
+                    check_condition(is_int(token), "expected int")
+                    source = int(token)
+
+                if i % 3 == 2:
+                    check_condition(is_int(token), "expected int")
+                    target = int(token)
+                    check_condition(target < len(alignment),
+                                    "Alignment must point in to the sentence. "
+                                    "Got alignment %d for length %d in sentence %d"
+                                    % (target, trg_lengths[sentence], sentence))
+
+                    if alignment[target] == -1:
+                        alignment[target] = source
+                    elif isinstance(alignment[target], list):
+                        alignment[target].append(source)
+                    else:
+                        alignment[target] = [alignment[target], source]
+    alignments.append(alignment)
+    check_condition(len(alignments) == len(trg_lengths), "alignment mst be parallel. alignment %d vs target %d"
+                    % (len(alignments), len(trg_lengths)))
+    return alignments
+
+
+def read_alignment_file(path, trg_lengths, src_lengths):
+    """
+    read flat alignment file
+    :param path: path to alignment file
+    :param trg_lengths: array of target lengths (for each sentence)
+    :param src_lengths: array of source lengths (for each sentence)
+    :return: array of alignments (unprocessed)
+    """
+    check_condition(len(trg_lengths) == len(src_lengths), "source and target sentences must be parallel")
+    file = smart_open(path)
+    content = file.readlines()
+    if len(content) == len(trg_lengths):
+        is_multiline = False
+        alignments = _read_flat_alignment_file(content=content, trg_lengths=trg_lengths)
+    else:
+        is_multiline = True
+        alignments = _read_multiline_alignment_file(content=content, trg_lengths=trg_lengths)
+
+    check_condition(len(alignments) == len(trg_lengths), "alignment mst be parallel")
+    return alignments, is_multiline
 
 
 def process_alignments(alignments,
@@ -227,7 +283,7 @@ def main():
     trg_lengths = [len(x) for x in read_sentences(args.target)]
     src_lengths = [len(x) for x in read_sentences(args.source)]
 
-    alignments = read_alignment_file(
+    alignments, is_multiline = read_alignment_file(
         path=args.alignment,
         trg_lengths=trg_lengths,
         src_lengths=src_lengths)
