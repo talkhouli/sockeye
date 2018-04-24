@@ -159,7 +159,8 @@ def process_alignments(alignments,
                        unaligned_target,
                        multiply_aligned_target,
                        eps_index,
-                       bbn_multiply_aligned_target):
+                       bbn_multiply_aligned_target,
+                       bbn_unaligned_target):
     """
     process alignments according to heuristics given
     :param alignments: array of alignments
@@ -167,6 +168,7 @@ def process_alignments(alignments,
     :param multiply_aligned_target:  how to handle multiply aligned target positions (bbn, keep)
     :param eps_index: index used in case of eps-unaligned heuristic
     :param bbn_multiply_aligned_target: handle multiply aligned target ties by rounding down (left) or up (right)
+    :param bbn_unaligned_target: in case of unaligned target words look first to left or right
     :return: array of processed alignments
     """
     check_condition(unaligned_target in UNALIGNED_TARGET,
@@ -181,6 +183,10 @@ def process_alignments(alignments,
                     or bbn_multiply_aligned_target in BBN_UNALIGNED_TARGET_DIRECTION.keys(),
                     "--bbn-multiply-aligned-target must be one of %s given %s"
                     % (BBN_UNALIGNED_TARGET_DIRECTION.keys(), bbn_multiply_aligned_target))
+    check_condition(bbn_unaligned_target is None
+                    or bbn_unaligned_target in BBN_UNALIGNED_TARGET_DIRECTION.keys(),
+                    "--bbn-unaligned-target must be one of %s given %s"
+                    % (BBN_UNALIGNED_TARGET_DIRECTION.keys(), bbn_unaligned_target))
 
     for l in range(len(alignments)):
         for t in range(len(alignments[l])):
@@ -191,10 +197,16 @@ def process_alignments(alignments,
                 elif unaligned_target == "bbn":
                     i = 0
                     while alignments[l][t] == -1:
-                        if t + i < len(alignments[l]) and alignments[l][t + i] != -1:
-                            alignments[l][t] = alignments[l][t + i]
-                        elif t - i >= 0 and alignments[l][t - i] != -1:
-                            alignments[l][t] = alignments[l][t - i]
+                        if bbn_unaligned_target == "right":
+                            if t + i < len(alignments[l]) and alignments[l][t + i] != -1:
+                                alignments[l][t] = alignments[l][t + i]
+                            elif t - i >= 0 and alignments[l][t - i] != -1:
+                                alignments[l][t] = alignments[l][t - i]
+                        elif bbn_unaligned_target == "left":
+                            if t - i >= 0 and alignments[l][t - i] != -1:
+                                alignments[l][t] = alignments[l][t - i]
+                            elif t + i < len(alignments[l]) and alignments[l][t + i] != -1:
+                                alignments[l][t] = alignments[l][t + i]
                         i += 1
                 elif unaligned_target == "eps":
                     alignments[l][t] = eps_index
@@ -285,6 +297,12 @@ def add_parameters(params):
                                 choices=list(BBN_UNALIGNED_TARGET_DIRECTION.keys()),
                                 help="How to handle multiply aligned target words in case of ties. "
                                      "Default: %(default)s.")
+    options_params.add_argument('--bbn-unaligned-target', '-bbn-ua',
+                                default="left",
+                                choices=list(BBN_UNALIGNED_TARGET_DIRECTION.keys()),
+                                help="How to handle unaligned target words. "
+                                     "Look to the right or left first"
+                                     "Default: %(default)s.")
     options_params.add_argument('--multiply-aligned-target', '-ma',
                                 default="keep",
                                 choices=list(MULTIPLY_ALIGNED_TARGET),
@@ -316,7 +334,8 @@ def main():
                                     unaligned_target=args.unaligned_target,
                                     multiply_aligned_target=args.multiply_aligned_target,
                                     eps_index=args.unaligned_target_epsilon_index,
-                                    bbn_multiply_aligned_target=args.bbn_multiply_aligned_target)
+                                    bbn_multiply_aligned_target=args.bbn_multiply_aligned_target,
+                                    bbn_unaligned_target=args.bbn_unaligned_target)
 
     if args.output_format is None:
         flat_output = not is_multiline
