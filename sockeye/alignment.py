@@ -18,6 +18,10 @@ MULTIPLY_ALIGNED_TARGET = {
     "keep"
 }
 
+OUTPUT_FORMAT = {
+    "flat",
+    "multiline"
+}
 
 def is_int(s):
     """
@@ -247,9 +251,10 @@ def add_parameters(params):
                              required=True,
                              type=regular_file(),
                              help='Flat alignment training file, alignment point e.g. S 0 1.')
-    data_params.add_argument('--flat-output', '-fo',
-                             action='store_true',
-                             help='Print flat alignments.'
+    data_params.add_argument('--output-format', '-of',
+                             default=None,
+                             choices=list(OUTPUT_FORMAT),
+                             help='Output format. Either one-line or multi-line. If not specified the same as input.'
                                   'Default: %(default)s.')
     data_params.add_argument('--output', '-o',
                              default=None,
@@ -293,12 +298,17 @@ def main():
                                     multiply_aligned_target=args.multiply_aligned_target,
                                     eps_index=args.unaligned_target_epsilon_index)
 
+    if args.output_format is None:
+        flat_output = not is_multiline
+    else:
+        flat_output = True if args.output_format == "flat" else False
+
     output_stream = sys.stdout if args.output is None else smart_open(args.output, mode='w')
     print_alignments(alignments=alignments,
                      stream=output_stream,
                      print_unaligned_target=True if args.unaligned_target == "keep" else False,
                      eps_index=args.unaligned_target_epsilon_index,
-                     flat=args.flat_output)
+                     flat=flat_output)
 
 
 if __name__ == '__main__':
