@@ -454,6 +454,9 @@ def add_model_parameters(params):
     model_params.add_argument('--rnn-context-gating', action="store_true",
                               help="Enables a context gate which adaptively weighs the RNN decoder input against the "
                                    "source context vector before each update of the decoder hidden state.")
+    model_params.add_argument('--rnn-concat-previous-pre-output', action="store_true",
+                              help="Concatenate previous pre-output state right before current rnn output.")
+
 
     # transformer arguments
     model_params.add_argument('--transformer-model-size',
@@ -588,6 +591,17 @@ def add_model_parameters(params):
                               action='store_true',
                               help='Turn on dynamic attention-alignment interpolation using position '
                                    'dependent computed interpolation weights. Default: %(default)s.')
+    model_params.add_argument('--uniform-unaligned-context',
+                              action='store_true',
+                              help='use uniform source context weights for unaligned words of negative source index'
+                                   'to compute the alignment model.'
+                                   'Default: %(default)s.')
+    model_params.add_argument('--last-aligned-context',
+                              action='store_true',
+                              help='use last aligned source position as source context of unaligned target words '
+                                   'to compute the alignment model.'
+                                   'Default: %(default)s.')
+
 
 
 def add_training_args(params):

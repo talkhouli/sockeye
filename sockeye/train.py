@@ -458,7 +458,9 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
                                                          alignment_bias=args.alignment_bias,
                                                          alignment_assisted=args.alignment_assisted,
                                                          alignment_interpolation=args.alignment_interpolation,
-                                                         dynamic_alignment_interpolation = args.dynamic_alignment_interpolation)
+                                                         dynamic_alignment_interpolation = args.dynamic_alignment_interpolation,
+                                                         uniform_unaligned_context=args.uniform_unaligned_context,
+                                                         last_aligned_context=args.last_aligned_context)
 
         _, decoder_rnn_dropout_inputs = args.rnn_dropout_inputs
         _, decoder_rnn_dropout_states = args.rnn_dropout_states
@@ -481,7 +483,8 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             context_gating=args.rnn_context_gating,
             layer_normalization=args.layer_normalization,
             attention_in_upper_layers=args.rnn_attention_in_upper_layers,
-            alignment_model=args.output_classes == C.ALIGNMENT_JUMP
+            alignment_model=args.output_classes == C.ALIGNMENT_JUMP,
+            concat_previous_pre_output=args.rnn_concat_previous_pre_output
         )
 
     return config_decoder

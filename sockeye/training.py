@@ -108,6 +108,7 @@ class TrainingModel(model.SockeyeModel):
                                                      else C.ALIGNMENT_JUMP_LABEL_NAME),
                                 shape=(-1,))
         alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
+        last_alignment = mx.sym.Variable(C.LAST_ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
 
         model_loss = loss.get_loss(self.config.config_loss)
 
@@ -143,7 +144,8 @@ class TrainingModel(model.SockeyeModel):
             # target_decoded: (batch-size, target_len, decoder_depth)
             target_decoded = self.decoder.decode_sequence(source_encoded, source_encoded_length, source_encoded_seq_len,
                                                           target_embed, target_embed_length, target_embed_seq_len,
-                                                          alignment)
+                                                          alignment,
+                                                          last_alignment)
 
             # target_decoded: (batch_size * target_seq_len, rnn_num_hidden)
             target_decoded = mx.sym.reshape(data=target_decoded, shape=(-3, 0))
@@ -163,6 +165,7 @@ class TrainingModel(model.SockeyeModel):
       #                              enumerate(self.decoder.attention.debug_alignment_one_hot) if sym is not None]), data_names, label_names
             if self.decoder.debug_alignment is not None:
                 return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.debug_alignment)]  + \
+                                    [utils.debug_symbol_standalone(self.decoder.debug_last_alignment)] + \
                                     [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
                                                               enumerate(self.decoder.debug_attention)  if sym is not None]
                                 ), data_names, label_names

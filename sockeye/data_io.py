@@ -566,6 +566,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                  source_data_name=C.SOURCE_NAME,
                  target_data_name=C.TARGET_NAME,
                  alignment_data_name=C.ALIGNMENT_NAME,
+                 last_alignment_data_name=C.LAST_ALIGNMENT_NAME,
                  label_name=C.TARGET_LABEL_NAME,
                  dtype='float32') -> None:
         super(ParallelBucketSentenceIter, self).__init__()
@@ -583,6 +584,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.source_data_name = source_data_name
         self.target_data_name = target_data_name
         self.alignment_data_name = alignment_data_name
+        self.last_alignment_data_name = last_alignment_data_name
         self.label_name = label_name
         self.fill_up = fill_up
         self.output_type=output_type
@@ -593,6 +595,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.data_alignment = None
         if alignment != []:
             self.data_alignment = [[] for _ in self.buckets]  # type: ignore
+            self.data_last_alignment = [[] for _ in self.buckets]  # type: ignore
 
         self.data_target_average_len = [0 for _ in self.buckets]
 
@@ -637,6 +640,13 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                                 layout=C.BATCH_MAJOR))
             self.data_names.append(self.alignment_data_name)
 
+            self.provide_data.append(
+                mx.io.DataDesc(name=self.last_alignment_data_name,
+                               shape=(self.bucket_batch_sizes[-1].batch_size, self.default_bucket_key[1]),
+                               layout=C.BATCH_MAJOR))
+
+            self.data_names.append(self.last_alignment_data_name)
+
         # create index tuples (i,j) into buckets: i := bucket index ; j := row index of bucket array
         self.idx = []  # type: List[Tuple[int, int]]
         for i, buck in enumerate(self.data_source):
@@ -655,6 +665,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_label = []  # type: List[mx.ndarray]
 
         self.nd_alignment = []  if alignment != [] else None # type: List[mx.ndarray]
+        self.nd_last_alignment = [] if alignment != [] else None  # type: List[mx.ndarray]
 
         self.reset()
 
@@ -671,6 +682,12 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             source = elements[0]
             target = elements[1]
             alignment = elements[2] if len(elements)>2 else None
+            # last aligned positions: unaligned target words mapped to last aligned source positions
+            last_alignment = alignment[:]
+            for i in range(0, len(target)):
+                if last_alignment[i] == C.UNALIGNED_SOURCE_INDEX:
+                    last_alignment[i] = last_alignment[i - 1]
+
             source_len = len(source)
             target_len = len(target)
             buck_idx, buck = get_parallel_bucket(self.buckets, source_len, target_len)
@@ -702,19 +719,26 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             if self.output_type == C.WORDS:
                 buff_label[:len(target)] = target[1:] + [self.eos_id]
             else:
-
                 offset = (C.NUM_ALIGNMENT_JUMPS-1)/2
-                buff_label[:len(target)] = [offset + alignment[i] - alignment[i-1] for i in range(1,len(target)+1) ]
+                unaligned = np.array([alignment[i+1] == C.UNALIGNED_SOURCE_INDEX for i in range(0,len(target))])
+
+                buff_label[:len(target)] = [offset + last_alignment[i] - last_alignment[i-1] for i in range(1,len(target)+1)]
                                            #+ [offset + len(source)-alignment[len(target)-1]]
 
+                buff_label[:len(target)][unaligned] = C.UNALIGNED_JUMP_LABEL
             self.data_source[buck_idx].append(buff_source)
             self.data_target[buck_idx].append(buff_target)
             self.data_label[buck_idx].append(buff_label)
             self.data_target_average_len[buck_idx] += target_len
+
             if alignment is not None:
                 buff_alignment = np.full((buck[1]+1,), self.pad_id, dtype=self.dtype)
                 buff_alignment[:len(alignment)] = alignment
                 self.data_alignment[buck_idx].append(buff_alignment)
+
+                buff_last_alignment = np.full((buck[1] + 1,), self.pad_id, dtype=self.dtype)
+                buff_last_alignment[:len(alignment)] = last_alignment
+                self.data_last_alignment[buck_idx].append(buff_last_alignment)
 
         # Average number of non-padding elements in target sequence per bucket
         for buck_idx, buck in enumerate(self.buckets):
@@ -811,6 +835,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             if self.data_alignment is not None:
                 self.data_alignment[i] = np.asarray(self.data_alignment[i], dtype=self.dtype)
 
+            if self.data_last_alignment is not None:
+                self.data_last_alignment[i] = np.asarray(self.data_last_alignment[i], dtype=self.dtype)
+
+
             n = len(self.data_source[i])
             batch_size_seq = self.bucket_batch_sizes[i].batch_size
             if n % batch_size_seq != 0:
@@ -831,6 +859,9 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                     if self.data_alignment is not None:
                         self.data_alignment[i] = np.concatenate((self.data_alignment[i],
                                                                  self.data_alignment[i][random_indices, :]), axis=0)
+                    if self.data_last_alignment is not None:
+                        self.data_last_alignment[i] = np.concatenate((self.data_last_alignment[i],
+                                                                 self.data_last_alignment[i][random_indices, :]), axis=0)
 
 
     def reset(self):
@@ -846,6 +877,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_label = []
         if self.nd_alignment is not None:
             self.nd_alignment = []
+
+        if self.nd_last_alignment is not None:
+            self.nd_last_alignment = []
+
         self.indices = []
         for i in range(len(self.data_source)):
             # shuffle indices within each bucket
@@ -865,6 +900,9 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_label.append(mx.nd.array(self.data_label[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
         if self.nd_alignment is not None:
             self.nd_alignment.append(mx.nd.array(self.data_alignment[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
+
+        if self.nd_last_alignment is not None:
+            self.nd_last_alignment.append(mx.nd.array(self.data_last_alignment[bucket].take(shuffled_indices, axis=0), dtype=self.dtype))
 
     def iter_next(self) -> bool:
         """
@@ -890,6 +928,10 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         if self.nd_alignment is not None:
             alignment = self.nd_alignment[i][j:j + batch_size_seq]
             data.append(alignment)
+
+        if self.nd_last_alignment is not None:
+            last_alignment = self.nd_last_alignment[i][j:j + batch_size_seq]
+            data.append(last_alignment)
 
         label = [self.nd_label[i][j:j + batch_size_seq]]
 
@@ -936,8 +978,11 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.nd_source = []
         self.nd_target = []
         self.nd_label = []
-        # TODO (Tamer): does this work?
         if self.nd_alignment is not None:
             self.nd_alignment = []
+
+        if self.nd_last_alignment is not None:
+            self.nd_last_alignment = []
+
         for i in range(len(self.data_source)):
             self._append_ndarrays(i, self.indices[i])

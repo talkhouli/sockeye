@@ -56,7 +56,9 @@ class AttentionConfig(config.Config):
                  alignment_bias: bool = False,
                  alignment_assisted: float = 0.0,
                  alignment_interpolation: bool = False,
-                 dynamic_alignment_interpolation: bool = False) -> None:
+                 dynamic_alignment_interpolation: bool = False,
+                 uniform_unaligned_context : bool = False,
+                 last_aligned_context: bool = False) -> None:
         super().__init__()
         self.type = type
         self.num_hidden = num_hidden
@@ -70,6 +72,8 @@ class AttentionConfig(config.Config):
         self.alignment_assisted = alignment_assisted
         self.alignment_interpolation = alignment_interpolation
         self.dynamic_alignment_interpolation = dynamic_alignment_interpolation
+        self.uniform_unaligned_context = uniform_unaligned_context
+        self.last_aligned_context = last_aligned_context
 
 
 def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
@@ -108,7 +112,9 @@ def get_attention(config: AttentionConfig, max_seq_len: int) -> 'Attention':
                             alignment_interpolation = config.alignment_interpolation,
                             dynamic_alignment_interpolation=config.dynamic_alignment_interpolation)
     elif config.type == C.ATT_ALIGNMENT:
-        return Alignment(input_previous_word=config.input_previous_word)
+        return Alignment(input_previous_word=config.input_previous_word,
+                         uniform_unaligned_context=config.uniform_unaligned_context,
+                         last_aligned_context=config.last_aligned_context)
     elif config.type == C.ATT_COV:
         return MlpAttention(input_previous_word=config.input_previous_word,
                             attention_num_hidden=config.num_hidden,
@@ -173,12 +179,15 @@ class Attention(object):
         :return: Attention callable.
         """
 
-        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: source positions
+            :param last_alignment: last aligned source positions
             :return: Updated attention state.
             """
             raise NotImplementedError()
@@ -255,12 +264,16 @@ class BilinearAttention(Attention):
                                               flatten=False,
                                               name="%ssource_hidden_fc" % self.prefix)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState, alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: aligned source positions
+            :param last_alignment: last aligned source positions
             :return: Updated attention state.
             """
             # (batch_size, decoder_num_hidden, 1)
@@ -336,12 +349,16 @@ class DotAttention(Attention):
         else:
             source_hidden = source
 
-        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: aligned source positions
+            :param last_alignment: last aligned source positions
             :return: Updated attention state.
             """
             query = att_input.query
@@ -426,12 +443,16 @@ class MultiHeadDotAttention(Attention):
         keys = layers.split_heads(keys, self.num_hidden_per_head, self.heads)
         values = layers.split_heads(values, self.num_hidden_per_head, self.heads)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: aligned source positions
+            :param last_alignment: last aligned source positions
             :return: Updated attention state.
             """
             # (batch, num_hidden)
@@ -501,7 +522,9 @@ class EncoderLastStateAttention(Attention):
                                                  use_sequence_length=True)
         fixed_probs = mx.sym.one_hot(source_length - 1, depth=source_seq_len)
 
-        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             return AttentionState(context=encoder_last_state,
                                   probs=fixed_probs,
                                   dynamic_source=att_state.dynamic_source)
@@ -541,12 +564,16 @@ class LocationAttention(Attention):
         :return: Attention callable.
         """
 
-        def attend(att_input: AttentionInput, att_state: AttentionState,alignment: mx.sym.Symbol = None) -> AttentionState:
+        def attend(att_input: AttentionInput, att_state: AttentionState,
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
+            :param alignment: aligned source positions
+            :param last_alignment: last aligned source positions
             :return: Updated attention state.
             """
             # attention_scores: (batch_size, seq_len)
@@ -644,7 +671,7 @@ class MlpAttention(Attention):
         self._ln = layers.LayerNormalization(num_hidden=attention_num_hidden,
                                              prefix="%snorm" % self.prefix) if layer_normalization else None
         self.alignment_assisted = alignment_assisted
-        self.alignment_layer = Alignment(input_previous_word) if alignment_assisted > 0.0 else None
+        self.alignment_layer = Alignment(input_previous_word,False) if alignment_assisted > 0.0 else None
         self.alignment_interpolation = alignment_interpolation
         self.dynamic_alignment_interpolation = dynamic_alignment_interpolation
         
@@ -679,13 +706,15 @@ class MlpAttention(Attention):
             self.alignment_func = self.alignment_layer.on(source,source_length,source_seq_len)
 
         def attend(att_input: AttentionInput, att_state: AttentionState,
-                   alignment: mx.sym.Symbol = None) -> AttentionState:
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns updated attention state given attention input and current attention state.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
             :param alignment: Shape: (batch_size,)
+            :param last_alignment: last aligned positions. Shape: (batch_size,)
             :return: Updated attention state.
             """
 
@@ -1161,8 +1190,12 @@ class Alignment(Attention):
     :param config_coverage: Optional coverage config.
     """
 
-    def __init__(self,input_previous_word: bool) -> None:
+    def __init__(self,input_previous_word: bool,
+                 uniform_unaligned_context: bool,
+                 last_aligned_context: bool) -> None:
         super().__init__(input_previous_word=input_previous_word)
+        self.uniform_unaligned_context = uniform_unaligned_context
+        self.last_aligned_context = last_aligned_context
 
     def on(self, source: mx.sym.Symbol, source_length: mx.sym.Symbol, source_seq_len: int) -> Callable:
         """
@@ -1177,22 +1210,52 @@ class Alignment(Attention):
         """
 
         def attend(att_input: AttentionInput, att_state: AttentionState,
-                   alignment: mx.sym.Symbol = None) -> AttentionState:
+                   alignment: mx.sym.Symbol = None,
+                   last_alignment: mx.sym.Symbol = None) -> AttentionState:
             """
             Returns aligned context.
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
             :param alignment: Shape: (batch_size,)
+            :param last_alignment: last aligned positions. Shape (batch_size,)
             :return: Updated attention state.
             """
 
-            attention_scores  = mx.sym.one_hot(alignment, source_seq_len, name="%salignment_one_hot" % self.prefix)
-            attention_scores = mx.sym.swapaxes(attention_scores,1,2)
-            context = mx.sym.batch_dot(lhs=source, rhs=attention_scores, transpose_a=True)
+            one_hot  = mx.sym.one_hot(last_alignment if self.last_aligned_context else alignment,
+                                      source_seq_len,
+                                      name="%salignment_one_hot" % self.prefix)
+            one_hot = mx.sym.swapaxes(one_hot, 1, 2)
+            if self.uniform_unaligned_context:
+                # (batch_size,)
+                uniform_weights = mx.sym.ones_like(alignment)/mx.sym.expand_dims(data=source_length,axis=1)
+                # (batch_size,1)
+                uniform_weights = mx.sym.expand_dims(data=uniform_weights,axis=1)
+                # (batch_size,source_seq_len)
+                uniform_weights = mx.sym.broadcast_axis(data=uniform_weights,axis=1,size=source_seq_len)
+                uniform_weights = mx.sym.swapaxes(uniform_weights, 0, 1)
+                uniform_weights = mx.sym.SequenceMask(data=uniform_weights,
+                                                      use_sequence_length=True,
+                                                      sequence_length=source_length,
+                                                      value=0)
+                uniform_weights = mx.sym.swapaxes(uniform_weights, 0, 1)
+
+                # determine unaligned positions
+                # (batch_size,)
+                unaligned = mx.sym.where(alignment >= 0, mx.sym.zeros_like(alignment), mx.sym.ones_like(alignment))
+                # (batch_size,1)
+                unaligned = mx.sym.expand_dims(data=unaligned,axis=1)
+                # (batch_size,source_seq_len)
+                unaligned = mx.sym.broadcast_axis(data=unaligned,axis=1,size=source_seq_len)
+
+                # select between unifrom weights and one_hot selection
+                one_hot = mx.sym.where(unaligned, uniform_weights, one_hot)
+
+
+            context = mx.sym.batch_dot(lhs=source, rhs=one_hot, transpose_a=True)
             # (batch_size, encoder_num_hidden, 1)-> (batch_size, encoder_num_hidden)
             context = mx.sym.reshape(data=context, shape=(0, 0))
-            attention_probs = mx.sym.reshape(data=attention_scores, shape=(0, 0))
+            attention_probs = mx.sym.reshape(data=one_hot, shape=(0, 0))
 
             return AttentionState(context=context,
                                   probs=attention_probs,
