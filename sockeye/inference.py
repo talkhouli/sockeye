@@ -1362,7 +1362,7 @@ class Translator:
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np
-            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - 1 # subtract 1 for shift due to unaligned target handling
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - (1 if self.use_unaligned else 0)
             best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
             scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
