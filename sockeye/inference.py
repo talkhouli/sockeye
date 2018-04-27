@@ -83,6 +83,8 @@ class InferenceModel(model.SockeyeModel):
         self.batch_size = batch_size
         self.context = context
         self.alignment_based= self.config.config_data.alignment is not None
+        self.use_unaligned = self.config.config_decoder.attention_config.uniform_unaligned_context or \
+                                self.config.config_decoder.attention_config.last_aligned_context
         self.alignment_model = self.config.output_classes == C.ALIGNMENT_JUMP
         self._build_model_components()
 
@@ -330,7 +332,8 @@ class InferenceModel(model.SockeyeModel):
                     model_state: 'ModelState',
                     prev_alignment: mx.nd.NDArray = None,
                     last_alignment: mx.nd.NDArray = None,
-                    actual_source_length: int = -1) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
+                    actual_source_length: int = -1,
+                    use_unaligned: bool = True) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
         Runs forward pass of the single-step decoder.
 
@@ -338,9 +341,24 @@ class InferenceModel(model.SockeyeModel):
         """
         #lexical alignment-based model: alignments hypothesized
         #alignment model: previous alignments used
-        alignment_end_idx = actual_source_length if self.alignment_based and not self.alignment_model else 0
+        alignment_begin_idx = -1 if use_unaligned else 0
+        alignment_max_length = 1
+        if self.alignment_based and not self.alignment_model:
+            alignment_end_idx = actual_source_length
+            alignment_max_length = bucket_key[0] + 1 #extra position for handling unaliged target words
+        elif self.alignment_model:
+            if use_unaligned:
+                alignment_end_idx = 0
+            else:
+                alignment_end_idx = 1
+        else:
+            alignment_end_idx = 1
+
+
+
+        #alignment_end_idx = actual_source_length if self.alignment_based and not self.alignment_model else 0
         #extra position for handling unaliged target words
-        alignment_max_length = bucket_key[0]+1 if self.alignment_based and not self.alignment_model else 1
+        #alignment_max_length = bucket_key[0]+1 if self.alignment_based and not self.alignment_model else 1
         alignment_shape = None
         for e in self._get_decoder_data_shapes(bucket_key):
             if e[0] == C.ALIGNMENT_NAME:
@@ -349,8 +367,9 @@ class InferenceModel(model.SockeyeModel):
 
         out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
         new_states = [None] * len(model_state.states)
-        for align_pos in range(-1,alignment_end_idx):
-            j = align_pos + 1
+        for align_pos in range(alignment_begin_idx,alignment_end_idx):
+            j = align_pos
+            j = j + 1 if use_unaligned else j
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
@@ -1017,7 +1036,10 @@ class Translator:
             #alignment models evaluated later
             if model.alignment_model:
                 continue
-            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key, state, actual_source_length=actual_soruce_length)
+            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key,
+                                                                                       state,
+                                                                                       actual_source_length=actual_soruce_length,
+                                                                                       use_unaligned=self.use_unaligned)
             # Compute logits and softmax with restricted vocabulary
             if self.restrict_lexicon:
                 logits = model.output_layer(decoder_outputs, out_w, out_b)
@@ -1039,7 +1061,10 @@ class Translator:
             if not model.alignment_model:
                 continue
             has_align_model = True
-            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment, last_alignment=last_alignment, actual_source_length=actual_soruce_length)
+            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment,
+                                                   last_alignment=last_alignment,
+                                                   actual_source_length=actual_soruce_length,
+                                                   use_unaligned=self.use_unaligned)
             align_model_probs.append(probs)
             model_states.append(state)
 
@@ -1079,7 +1104,7 @@ class Translator:
                                                             coverage_vector)
             alignment_jump_idx =  C.UNALIGNED_JUMP_LABEL * \
                                         mx.ndarray.ones_like(data=last_alignment, ctx=self.context, dtype='int32') \
-                                        if new_alignment[j][0] == C.UNALIGNED_SOURCE_INDEX \
+                                        if new_alignment[j][0] == C.UNALIGNED_SOURCE_INDEX and self.use_unaligned \
                                                 else   (C.NUM_ALIGNMENT_JUMPS-1)/2 + new_alignment[j][0] - last_alignment
             #jump_scores = mx.ndarray.batch_take(align_neg_logprobs[0],alignment_jump_idx)
             jump_scores = mx.ndarray.pick(align_neg_logprobs[0], alignment_jump_idx, keepdims=True)
@@ -1090,7 +1115,7 @@ class Translator:
                                              self.lex_weight * lex_neg_logprobs[j] + self.align_weight * jump_scores)
             #enforce sentence-end to sentence-end alignment
             if new_alignment[j][0] != actual_soruce_length -1 and \
-                            new_alignment[j][0] != C.UNALIGNED_SOURCE_INDEX:
+                    new_alignment[j][0] != C.UNALIGNED_SOURCE_INDEX:
                 combined_result[j,:,self.vocab_target[C.EOS_SYMBOL]] = np.inf
 
         return combined_result
@@ -1109,7 +1134,7 @@ class Translator:
         """
 
         #unaligned positions produce no violations
-        if new_alignment == C.UNALIGNED_SOURCE_INDEX:
+        if new_alignment == C.UNALIGNED_SOURCE_INDEX and self.use_unaligned:
             return mx.nd.zeros(ctx=self.context,shape=(self.beam_size*self.batch_size,1))
 
         max_jump = C.MAX_JUMP
@@ -1280,6 +1305,7 @@ class Translator:
         #keep track of last aligned position needed for handling jumps after unaligned target words
         last_aligned = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,),dtype='int32') -1
         alignment_based = any([model.alignment_based for model in self.models])
+        self.use_unaligned = any([model.use_unaligned for model in self.models])
         logger.info("source length: %d",actual_source_length)
         for t in range(1, max_output_length):
 
