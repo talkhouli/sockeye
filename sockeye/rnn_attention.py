@@ -713,8 +713,8 @@ class MlpAttention(Attention):
 
             :param att_input: Attention input as returned by make_input().
             :param att_state: Current attention state
-            :param alignment: Shape: (batch_size,)
-            :param last_alignment: last aligned positions. Shape: (batch_size,)
+            :param alignment: Shape: (batch_size,1)
+            :param last_alignment: last aligned positions. Shape: (batch_size,1)
             :return: Updated attention state.
             """
 

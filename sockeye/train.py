@@ -385,7 +385,9 @@ def create_encoder_config(args: argparse.Namespace,
                                      first_residual_layer=args.rnn_first_residual_layer,
                                      forget_bias=args.rnn_forget_bias),
             conv_config=config_conv,
-            reverse_input=args.rnn_encoder_reverse_input)
+            reverse_input=args.rnn_encoder_reverse_input,
+            positional_embedding_type=args.rnn_encoder_positional_embedding_type,
+            num_embed=args.num_embed[0])
         encoder_num_hidden = args.rnn_num_hidden
 
     return config_encoder, encoder_num_hidden
@@ -484,8 +486,7 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             layer_normalization=args.layer_normalization,
             attention_in_upper_layers=args.rnn_attention_in_upper_layers,
             alignment_model=args.output_classes == C.ALIGNMENT_JUMP,
-            concat_previous_pre_output=args.rnn_concat_previous_pre_output
-        )
+            concat_previous_pre_output=args.rnn_concat_previous_pre_output)
 
     return config_decoder
 

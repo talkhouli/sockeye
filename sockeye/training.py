@@ -164,7 +164,8 @@ class TrainingModel(model.SockeyeModel):
       #                          [utils.debug_symbol_standalone(sym,suffix="%d"%idx) for idx,sym in
       #                              enumerate(self.decoder.attention.debug_alignment_one_hot) if sym is not None]), data_names, label_names
             if self.decoder.debug_alignment is not None:
-                return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.debug_alignment)]  + \
+                return mx.sym.Group(probs +  [utils.debug_symbol_standalone(source_embed)] + \
+                                    [utils.debug_symbol_standalone(self.decoder.debug_alignment)]  + \
                                     [utils.debug_symbol_standalone(self.decoder.debug_last_alignment)] + \
                                     [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
                                                               enumerate(self.decoder.debug_attention)  if sym is not None]

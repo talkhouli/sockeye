@@ -457,6 +457,11 @@ def add_model_parameters(params):
     model_params.add_argument('--rnn-concat-previous-pre-output', action="store_true",
                               help="Concatenate previous pre-output state right before current rnn output.")
 
+    model_params.add_argument('--rnn-encoder-positional-embedding-type',
+                              choices=C.POSITIONAL_EMBEDDING_TYPES,
+                              default=C.NO_POSITIONAL_EMBEDDING,
+                              help='The type of positional embedding. Source positions are encoded '
+                                   'into the last encoder state. Default: %(default)s.')
 
     # transformer arguments
     model_params.add_argument('--transformer-model-size',

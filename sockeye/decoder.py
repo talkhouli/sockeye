@@ -483,6 +483,7 @@ class RecurrentDecoderConfig(Config):
         self.concat_previous_pre_output = concat_previous_pre_output
 
 
+
 class RecurrentDecoder(Decoder):
     """
     RNN Decoder with attention.
@@ -853,7 +854,7 @@ class RecurrentDecoder(Decoder):
         :param attention_func: Attention function to produce context vector.
         :param attention_state: Previous attention state.
         :param seq_idx: Decoder time step.
-        :param alignment_slice alignment positions per step. Shape (batch_size,)
+        :param alignment_slice alignment positions per step. Shape (batch_size,1)
         :param last_alignment_slice alignment positions per step, unaligned mapped to last aligned positions. Shape (batch_size,)
         :return: (new decoder state, updated attention state).
         """
@@ -872,6 +873,7 @@ class RecurrentDecoder(Decoder):
         attention_input = self.attention.make_input(seq_idx, word_vec_prev, rnn_pre_attention_output)
         attention_state = attention_func(attention_input, attention_state, alignment_slice,
                                          last_alignment_slice)
+        
 
         # (3) Attention handling (and possibly context gating)
         if self.rnn_post_attention:
