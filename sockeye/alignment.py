@@ -50,7 +50,9 @@ def read_sentences(path):
     file = smart_open(path)
     sentences = []
     for line in file.readlines():
-        sentences.append(line.strip().split(" "))
+        tokens = line.strip().split(" ")
+        tokens = list(filter(bool, tokens))
+        sentences.append(tokens)
 
     return sentences
 
