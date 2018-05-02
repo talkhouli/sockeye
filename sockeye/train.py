@@ -486,7 +486,10 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             layer_normalization=args.layer_normalization,
             attention_in_upper_layers=args.rnn_attention_in_upper_layers,
             alignment_model=args.output_classes == C.ALIGNMENT_JUMP,
-            concat_previous_pre_output=args.rnn_concat_previous_pre_output)
+            concat_previous_pre_output=args.rnn_concat_previous_pre_output,
+            positional_embedding_type=args.rnn_attention_context_positional_embedding_type,
+            max_seq_len_target=max_seq_len_target,
+            label_num_layers=args.rnn_label_num_layers)
 
     return config_decoder
 
@@ -527,6 +530,7 @@ def create_model_config(args: argparse.Namespace,
     max_seq_len_source, max_seq_len_target = args.max_seq_len
     num_embed_source, num_embed_target = args.num_embed
     embed_dropout_source, embed_dropout_target = args.embed_dropout
+    embed_dropout_output = embed_dropout_target
 
     check_encoder_decoder_args(args)
 
@@ -548,6 +552,9 @@ def create_model_config(args: argparse.Namespace,
     config_embed_target = encoder.EmbeddingConfig(vocab_size=vocab_target_size,
                                                   num_embed=num_embed_target,
                                                   dropout=embed_dropout_target)
+    config_embed_output = encoder.EmbeddingConfig(vocab_size=vocab_target_size if args.output_classes== C.WORDS else C.NUM_ALIGNMENT_JUMPS,
+                                                  num_embed=config_decoder.rnn_config.num_hidden,
+                                                  dropout=embed_dropout_output)
 
     config_loss = loss.LossConfig(name=args.loss,
                                   vocab_size=vocab_target_size if args.output_classes == C.WORDS else C.NUM_ALIGNMENT_JUMPS,
@@ -561,6 +568,7 @@ def create_model_config(args: argparse.Namespace,
                                      vocab_target_size=vocab_target_size,
                                      config_embed_source=config_embed_source,
                                      config_embed_target=config_embed_target,
+                                     config_embed_output=config_embed_output,
                                      config_encoder=config_encoder,
                                      config_decoder=config_decoder,
                                      config_loss=config_loss,

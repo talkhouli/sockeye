@@ -47,6 +47,7 @@ DEFAULT_OUTPUT_LAYER_PREFIX = "target_output_"
 SOURCE_EMBEDDING_PREFIX = "source_embed_"
 SOURCE_POSITIONAL_EMBEDDING_PREFIX = "source_pos_embed_"
 TARGET_EMBEDDING_PREFIX = "target_embed_"
+OUTPUT_EMBEDDING_PREFIX = "output_embed_"
 TARGET_POSITIONAL_EMBEDDING_PREFIX = "target_pos_embed_"
 SHARED_EMBEDDING_PREFIX = "source_target_embed_"
 

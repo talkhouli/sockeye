@@ -683,10 +683,11 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
             target = elements[1]
             alignment = elements[2] if len(elements)>2 else None
             # last aligned positions: unaligned target words mapped to last aligned source positions
-            last_alignment = alignment[:]
-            for i in range(0, len(target)):
-                if last_alignment[i] == C.UNALIGNED_SOURCE_INDEX:
-                    last_alignment[i] = last_alignment[i - 1]
+            if alignment:
+                last_alignment = alignment[:]
+                for i in range(0, len(target)):
+                    if last_alignment[i] == C.UNALIGNED_SOURCE_INDEX:
+                        last_alignment[i] = last_alignment[i - 1]
 
             source_len = len(source)
             target_len = len(target)

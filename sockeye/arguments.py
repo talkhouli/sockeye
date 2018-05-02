@@ -456,12 +456,15 @@ def add_model_parameters(params):
                                    "source context vector before each update of the decoder hidden state.")
     model_params.add_argument('--rnn-concat-previous-pre-output', action="store_true",
                               help="Concatenate previous pre-output state right before current rnn output.")
-
     model_params.add_argument('--rnn-encoder-positional-embedding-type',
                               choices=C.POSITIONAL_EMBEDDING_TYPES,
                               default=C.NO_POSITIONAL_EMBEDDING,
                               help='The type of positional embedding. Source positions are encoded '
                                    'into the last encoder state. Default: %(default)s.')
+    model_params.add_argument('--rnn-label-num-layers',
+                              type=int_greater_or_equal(0),
+                              default=0,
+                              help='Number of rnn layers for previous output label. Default: %(default)s.')
 
     # transformer arguments
     model_params.add_argument('--transformer-model-size',
@@ -545,6 +548,11 @@ def add_model_parameters(params):
     model_params.add_argument('--rnn-attention-mhdot-heads',
                               type=int, default=None,
                               help='Number of heads for Multi-head dot attention. Default: %(default)s.')
+    model_params.add_argument('--rnn-attention-context-positional-embedding-type',
+                              choices=C.POSITIONAL_EMBEDDING_TYPES,
+                              default=C.NO_POSITIONAL_EMBEDDING,
+                              help='The type of positional embedding. Aligned positions are encoded '
+                                   'into the weighted source context. Default: %(default)s.')
 
     model_params.add_argument('--weight-tying',
                               action='store_true',

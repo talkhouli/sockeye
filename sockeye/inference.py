@@ -227,6 +227,12 @@ class InferenceModel(model.SockeyeModel):
             # (batch_size, num_embed)
             target_embed_prev, _, _ = self.embedding_target.encode(data=target_prev, data_length=None, seq_len=1)
 
+            #output embedding
+            output_embed_prev = None
+            if self.alignment_model:
+                label_prev = mx.sym.Variable(C.ALIGNMENT_JUMP_LABEL_NAME)
+                (output_embed_prev, _, _ ) = self.embedding_output.encode(data=label_prev, data_length=None, seq_len=1)
+
             alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.alignment_based else None
             last_alignment = mx.sym.Variable(C.LAST_ALIGNMENT_NAME) if self.alignment_based else None
 
@@ -239,7 +245,8 @@ class InferenceModel(model.SockeyeModel):
                                                 source_encoded_seq_len,
                                                 *states,
                                                 alignment=alignment,
-                                                last_alignment=last_alignment)
+                                                last_alignment=last_alignment,
+                                                output_embed_prev=output_embed_prev)
 
             if self.decoder_return_logit_inputs:
                 # skip output layer in graph
@@ -256,7 +263,11 @@ class InferenceModel(model.SockeyeModel):
                                 if self.alignment_model
                                     and self.config.config_decoder.attention_config.last_aligned_context==True
                                 else C.ALIGNMENT_NAME]
-                             if self.alignment_based else [])
+                             if self.alignment_based else []) + \
+                         ([C.ALIGNMENT_JUMP_LABEL_NAME] if self.alignment_model
+                                                           and self.config.config_decoder.label_num_layers > 0
+                          else [] )
+
             label_names = []  # type: List[str]
             return mx.sym.Group([outputs, attention_probs] + states), data_names, label_names
 
@@ -299,7 +310,12 @@ class InferenceModel(model.SockeyeModel):
                                         and self.config.config_decoder.attention_config.last_aligned_context==True
                                     else C.ALIGNMENT_NAME,
                             shape=(self.batch_size * self.beam_size,1),
-                            layout="NT")] if self.alignment_based else []))
+                            layout="NT")] if self.alignment_based else []) +
+            ([mx.io.DataDesc(name=C.ALIGNMENT_JUMP_LABEL_NAME,
+                            shape=(self.batch_size * self.beam_size, 1),
+                            layout="NT")] if self.alignment_model \
+                                    and self.config.config_decoder.label_num_layers > 0 else [])
+        )
 
 
     def run_encoder(self,
@@ -332,6 +348,7 @@ class InferenceModel(model.SockeyeModel):
                     model_state: 'ModelState',
                     prev_alignment: mx.nd.NDArray = None,
                     last_alignment: mx.nd.NDArray = None,
+                    previous_jump: mx.nd.NDArray = None,
                     actual_source_length: int = -1,
                     use_unaligned: bool = True) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
@@ -367,6 +384,7 @@ class InferenceModel(model.SockeyeModel):
 
         out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
         new_states = [None] * len(model_state.states)
+        previous_jump = [previous_jump] if previous_jump is not None else []
         for align_pos in range(alignment_begin_idx,alignment_end_idx):
             j = align_pos
             j = j + 1 if use_unaligned else j
@@ -386,7 +404,7 @@ class InferenceModel(model.SockeyeModel):
                     alignment_result[j,:,:] = alignment[0]
                     #alignment_result.append(copy.deepcopy(alignment))
             batch = mx.io.DataBatch(
-                data=[prev_word.as_in_context(self.context)] + model_state.states + alignment,
+                data=[prev_word.as_in_context(self.context)] + model_state.states + alignment + previous_jump,
                 label=None,
                 bucket_key=bucket_key,
                 provide_data=self._get_decoder_data_shapes(bucket_key))
@@ -1007,8 +1025,9 @@ class Translator:
                      models_output_layer_b: List[mx.nd.NDArray],
                      prev_alignment: mx.nd.NDArray,
                      coverage_vector: mx.nd.NDArray,
-                     last_alignment: mx.nd.NDArray) \
-            -> Tuple[mx.nd.NDArray, mx.nd.NDArray, List[ModelState]]:
+                     last_alignment: mx.nd.NDArray,
+                     previous_jump: mx.nd.NDArray) \
+            -> Tuple[mx.nd.NDArray, mx.nd.NDArray, List[ModelState] ]:
         """
         Returns decoder predictions (combined from all models), attention scores, and updated states.
 
@@ -1023,6 +1042,7 @@ class Translator:
         :param prev_alignment: last aligned source positions
         :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
         :param last_alignment: (batch* beam_size,1) last aligned source positions
+        :param previous_jump: (batch* beam_size,1) source jump
         :return: (probs, attention scores, list of model states)
         """
         bucket_key = (source_length, step)
@@ -1063,6 +1083,7 @@ class Translator:
             has_align_model = True
             probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment,
                                                    last_alignment=last_alignment,
+                                                   previous_jump=previous_jump,
                                                    actual_source_length=actual_soruce_length,
                                                    use_unaligned=self.use_unaligned)
             align_model_probs.append(probs)
@@ -1082,7 +1103,7 @@ class Translator:
                                   new_alignment: mx.nd.NDArray,
                                   coverage_vector: mx.ndarray.NDArray,
                                   actual_soruce_length: int,
-                                  last_alignment: mx.ndarray.NDArray) -> mx.nd.NDArray:
+                                  last_alignment: mx.ndarray.NDArray) ->  mx.nd.NDArray:
 
 
         """
@@ -1098,6 +1119,7 @@ class Translator:
         :return: Combined weighted negative log probabilities
         """
         combined_result = lex_neg_logprobs
+        alignment_jump_idx = None
         for j in range(new_alignment.shape[0]):
             disallowed_alignments = self._invalid_alignments(prev_alignment,
                                                             new_alignment[j][0],
@@ -1302,15 +1324,17 @@ class Translator:
 
         #initial alignments set to -1
         alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,max_output_length),dtype='int32') -1
+        alignment_jump = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,1), dtype='int32')
         #keep track of last aligned position needed for handling jumps after unaligned target words
         last_aligned = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,),dtype='int32') -1
         alignment_based = any([model.alignment_based for model in self.models])
         self.use_unaligned = any([model.use_unaligned for model in self.models])
         logger.info("source length: %d",actual_source_length)
+        alignment_jump_offset = (C.NUM_ALIGNMENT_JUMPS - 1) / 2
         for t in range(1, max_output_length):
 
             # (1) obtain next predictions and advance models' state
-            # scores: (batch_size * beam_size, target_vocab_size)
+            # scores: (batch_size * beam_size, target_vocab_sicefmntze)
             # attention_scores: (batch_size * beam_size, bucket_key)
             scores, attention_scores, model_states = self._decode_step(sequences,
                                                                        t,
@@ -1322,7 +1346,8 @@ class Translator:
                                                                        models_output_layer_b,
                                                                        prev_alignment=mx.nd.slice_axis(alignment,axis=1,begin=t-1,end=t),
                                                                        coverage_vector=coverage_vector,
-                                                                       last_alignment=mx.nd.expand_dims(data=last_aligned, axis=1))
+                                                                       last_alignment=mx.nd.expand_dims(data=last_aligned, axis=1),
+                                                                       previous_jump=alignment_jump)
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
             #alignment_np = np.swapaxes(alignment.asnumpy(),0,1)
@@ -1395,6 +1420,10 @@ class Translator:
             if alignment_based:
                 alignment = mx.nd.take(alignment,best_hyp_indices)
                 alignment[:,t] =  best_hyp_pos_indices
+                alignment_jump = alignment_jump_offset + alignment[:,t] - (alignment[:,t-1]
+                                                                           if t>1
+                                                                           else mx.nd.zeros_like(alignment[:,t]))
+                alignment_jump = mx.nd.expand_dims(data=alignment_jump,axis=1)
                 last_aligned = mx.nd.take(last_aligned,best_hyp_indices)
                 last_aligned[:] = mx.nd.where(best_hyp_pos_indices>=0, best_hyp_pos_indices,last_aligned)
 
