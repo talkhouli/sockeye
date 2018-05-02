@@ -195,7 +195,7 @@ def process_alignments(alignments,
                 if unaligned_target == "sb":
                     alignments[l][t] = 0
                 elif unaligned_target == "bbn":
-                    i = 0
+                    i = 1
                     while alignments[l][t] == -1:
                         if bbn_unaligned_target == "right":
                             if t + i < len(alignments[l]) and alignments[l][t + i] != -1:
