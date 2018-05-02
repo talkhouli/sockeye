@@ -300,7 +300,7 @@ def add_parameters(params):
                                 help="How to handle multiply aligned target words in case of ties. "
                                      "Default: %(default)s.")
     options_params.add_argument('--bbn-unaligned-target', '-bbn-ua',
-                                default="left",
+                                default="right",
                                 choices=list(BBN_UNALIGNED_TARGET_DIRECTION.keys()),
                                 help="How to handle unaligned target words. "
                                      "Look to the right or left first"
