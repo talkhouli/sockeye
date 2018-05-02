@@ -586,6 +586,7 @@ TranslatorInput = NamedTuple('TranslatorInput', [
     ('id', int),
     ('sentence', str),
     ('tokens', Tokens),
+    ('reference_tokens', Tokens),
 ])
 """
 Required input for Translator.
@@ -596,6 +597,11 @@ Required input for Translator.
 """
 
 InputChunk = NamedTuple("InputChunk",
+                        [("id", int),
+                         ("chunk_id", int),
+                         ("tokens", Tokens)])
+
+ReferenceChunk = NamedTuple("ReferenceChunk",
                         [("id", int),
                          ("chunk_id", int),
                          ("tokens", Tokens)])
@@ -610,6 +616,7 @@ A chunk of a TranslatorInput.
 TranslatorOutput = NamedTuple('TranslatorOutput', [
     ('id', int),
     ('translation', str),
+    ('alignment', str),
     ('tokens', List[str]),
     ('attention_matrix', np.ndarray),
     ('score', float),
@@ -797,7 +804,7 @@ class Translator:
         self.align_weight = align_weight
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
-        max_output_length = self.models[0].get_max_output_length(self.max_input_length)
+        self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
         if bucket_source_width > 0:
             self.buckets_source = data_io.define_buckets(self.max_input_length, step=bucket_source_width)
         else:
@@ -836,16 +843,19 @@ class Translator:
         return -mx.nd.log(mx.nd.softmax(log_probs))
 
     @staticmethod
-    def make_input(sentence_id: int, sentence: str) -> TranslatorInput:
+    def make_input(sentence_id: int, sentence: str, reference: str) -> TranslatorInput:
         """
         Returns TranslatorInput from input_string
 
         :param sentence_id: Input sentence id.
         :param sentence: Input sentence.
+        :param sentence: Reference (target) sentence.
         :return: Input for translate method.
         """
         tokens = list(data_io.get_tokens(sentence))
-        return TranslatorInput(id=sentence_id, sentence=sentence.rstrip(), tokens=tokens)
+        reference_tokens = list(data_io.get_tokens(reference)) if reference else []
+        return TranslatorInput(id=sentence_id, sentence=sentence.rstrip(), tokens=tokens,
+                               reference_tokens=reference_tokens)
 
     def translate(self, trans_inputs: List[TranslatorInput]) -> List[TranslatorOutput]:
         """
@@ -859,6 +869,7 @@ class Translator:
 
         # split into chunks
         input_chunks = [] # type: List[InputChunk]
+        reference_chunks = []  # type: List[ReferenceChunk]
         for input_idx, trans_input in enumerate(trans_inputs):
             if len(trans_input.tokens) == 0:
                 empty_translation = Translation(target_ids=[],
@@ -875,21 +886,31 @@ class Translator:
                 token_chunks = utils.chunks(trans_input.tokens, self.max_input_length)
                 input_chunks.extend(InputChunk(input_idx, chunk_id, chunk)
                                     for chunk_id, chunk in enumerate(token_chunks))
+                if trans_input.reference_tokens:
+                    reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
             else:
                 input_chunks.append(InputChunk(input_idx, 0, trans_input.tokens))
+                if trans_input.reference_tokens:
+                    reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
         # Sort longest to shortest (to rather fill batches of shorter than longer sequences)
-        input_chunks = sorted(input_chunks, key=lambda chunk: len(chunk.tokens), reverse=True)
-
+        input_chunks,reference_chunks  = (list(t) for t in zip(*sorted(itertools.zip_longest(input_chunks,reference_chunks),
+                                                key=lambda args : len(args[0].tokens),
+                                                reverse=True)))
         # translate in batch-sized blocks over input chunks
-        for batch_id, chunks in enumerate(utils.grouper(input_chunks, self.batch_size)):
+        for batch_id, (chunks, ref_chunks) in enumerate(itertools.zip_longest(utils.grouper(input_chunks, self.batch_size),
+                                                                utils.grouper(reference_chunks, self.batch_size)
+                                                                    if reference_chunks is not None else [None])):
             batch = [chunk.tokens for chunk in chunks]
+            reference_batch = [chunk.tokens for chunk in ref_chunks] if len(ref_chunks)>0 \
+                                                                        and ref_chunks[0] is not None else []
             logger.debug("Translating batch %d", batch_id)
             # underfilled batch will be filled to a full batch size with copies of the 1st input
             rest = self.batch_size - len(batch)
             if rest > 0:
                 logger.debug("Extending the last batch to the full batch size (%d)", self.batch_size)
                 batch = batch + [batch[0]] * rest
-            batch_translations = self.translate_nd(*self._get_inference_input(batch),batch)
+                reference_batch = reference_batch + [reference_batch[0]] * rest
+            batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
@@ -913,28 +934,37 @@ class Translator:
 
         return results
 
-    def _get_inference_input(self, sequences: List[List[str]]) -> Tuple[mx.nd.NDArray, int]:
+    def _get_inference_input(self, sequences: List[List[str]], reference_sequences: List[List[str]] ) -> Tuple[mx.nd.NDArray, int]:
         """
         Returns NDArray of source ids (shape=(batch_size, bucket_key)) and corresponding bucket_key.
 
         :param sequences: List of lists of input tokens.
-        :return NDArray of source ids and bucket key.
+        :param sequences: List of lists of reference tokens.
+        :return NDArray of source ids, bucket key, source length, and reference ids
         """
         #+1 for EOS
         bucket_key = data_io.get_bucket(max(len(tokens)+1 for tokens in sequences), self.buckets_source)
 
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
-        for j, tokens in enumerate(sequences):
+        reference = mx.nd.zeros((len(reference_sequences), self.max_output_length)) if reference_sequences else []
+        for j, (tokens, reference_tokens) in enumerate(itertools.zip_longest(sequences,reference_sequences)):
             ids = data_io.tokens2ids(tokens,
                     self.vocab_source, has_categ_content=True)
+            reference_ids = data_io.tokens2ids(reference_tokens,
+                                     self.vocab_target, has_categ_content=True) if reference_tokens else []
             for i, wid in enumerate(ids):
                 source[j, i] = wid
             source[j,len(tokens)] = self.vocab_source[C.EOS_SYMBOL]
             #source_length needed for alignment-based models, where batch_size=len(sequences)=1
             source_length = len(tokens) + 1 # +1 for EOS
 
-        return source, bucket_key, source_length
+            for i, wid in enumerate(reference_ids):
+                reference[j, i] = wid
+            if reference_sequences:
+                reference[j,len(reference_tokens)] = self.vocab_target[C.EOS_SYMBOL]
+
+        return source, bucket_key, source_length, reference
 
     def _make_result(self,
                      trans_input: TranslatorInput,
@@ -969,6 +999,7 @@ class Translator:
 
         return TranslatorOutput(id=trans_input.id,
                                 translation=target_string,
+                                alignment=translation.alignment,
                                 tokens=target_tokens,
                                 attention_matrix=attention_matrix,
                                 score=translation.score,
@@ -987,6 +1018,7 @@ class Translator:
                      source: mx.nd.NDArray,
                      source_length: int,
                      actual_source_length: int,
+                     reference: mx.nd.NDArray,
                      original_source: List[List[str]]) -> List[Translation]:
         """
         Translates source of source_length, given a bucket_key.
@@ -994,11 +1026,13 @@ class Translator:
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Bucket key.
         :param actual_source_length: source_length_without padding
+                :param reference: Reference ids. Shape: (batch_size, max_output_length).
+
         :param original_source: original source words before vocabulary mappying (batch_size,)
 
         :return: Sequence of translations.
         """
-        return self._get_best_from_beam(*self._beam_search(source, source_length, actual_source_length),original_source)
+        return self._get_best_from_beam(*self._beam_search(source, source_length, actual_source_length,reference),original_source)
 
     def _encode(self, sources: mx.nd.NDArray, source_length: int) -> List[ModelState]:
         """
@@ -1229,7 +1263,8 @@ class Translator:
     def _beam_search(self,
                      source: mx.nd.NDArray,
                      source_length: int,
-                     actual_source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, \
+                     actual_source_length: int,
+                     reference: mx.nd.NDArray) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, \
                                                          mx.nd.NDArray, mx.nd.NDArray]:
         """
         Translates multiple sentences using beam search.
@@ -1237,6 +1272,7 @@ class Translator:
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Max source length.
         :param actual_source_length: Source length without padding
+        :param reference: Reference ids. Shape: (batch_size, max_output_length).
         :return List of lists of word ids, list of attentions, array of accumulated length-normalized
                 negative log-probs, lengths, coverage vector, alignments
         """
@@ -1379,11 +1415,15 @@ class Translator:
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
                 sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
+                if reference is not None and len(reference)>0:
+                    sliced_scores = sliced_scores[:, :, reference[:, t - 1].astype("int32").asnumpy()]
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
                 (best_hyp_indices_np[rows], best_hyp_pos_indices_np[rows] , best_word_indices_np[rows]), \
                     scores_accumulated_np[rows] = utils.smallest_k(sliced_scores, self.beam_size, t == 1)
                 # offsetting since the returned smallest_k() indices were slice-relative
                 best_hyp_indices_np[rows] += rows.start
+                if reference is not None and len(reference)>0:
+                    best_word_indices_np[rows] = reference[:, t - 1].astype("int32").asnumpy()
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np

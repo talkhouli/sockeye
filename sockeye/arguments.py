@@ -909,6 +909,10 @@ def add_inference_args(params):
                                help='Output file to write translations to. '
                                     'If not given, will write to stdout.')
 
+    decode_params.add_argument(C.INFERENCE_ARG_REFERENCE_LONG, C.INFERENCE_ARG_REFERENCE_SHORT,
+                               default=None,
+                               help='Reference (target) file for forced alignment. ')
+
     decode_params.add_argument('--models', '-m',
                                required=True,
                                nargs='+',

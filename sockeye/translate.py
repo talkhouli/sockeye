@@ -20,6 +20,7 @@ import time
 from math import ceil
 from contextlib import ExitStack
 from typing import Optional, Iterable
+import itertools
 
 import mxnet as mx
 
@@ -89,11 +90,12 @@ def main():
                                           lex_weight=args.lex_weight,
                                           align_weight=args.align_weight
                                           )
-        read_and_translate(translator, out_handler, args.chunk_size, args.input)
+        read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,
-                       chunk_size: Optional[int], source: Optional[str] = None) -> None:
+                       chunk_size: Optional[int], source: Optional[str] = None,
+                       reference: Optional[str] = None) -> None:
     """
     Reads from either a file or stdin and translates each line, calling the output_handler with the result.
 
@@ -103,6 +105,7 @@ def read_and_translate(translator: inference.Translator, output_handler: output_
     :param source: Path to file which will be translated line-by-line if included, if none use stdin.
     """
     source_data = sys.stdin if source is None else data_io.smart_open(source)
+    reference_data = None if reference is None else data_io.smart_open(reference)
 
     batch_size = translator.batch_size
     if chunk_size is None:
@@ -121,8 +124,9 @@ def read_and_translate(translator: inference.Translator, output_handler: output_
     logger.info("Translating...")
 
     total_time, total_lines = 0.0, 0
-    for chunk in grouper(source_data, chunk_size):
-        chunk_time = translate(output_handler, chunk, translator, total_lines)
+    for chunk, reference_chunk in itertools.zip_longest(grouper(source_data, chunk_size), grouper(reference_data, chunk_size)
+                                            if reference_data is not None else [None]):
+        chunk_time = translate(output_handler, chunk, translator, total_lines, reference_chunk)
         total_lines += len(chunk)
         total_time += chunk_time
 
@@ -135,7 +139,8 @@ def read_and_translate(translator: inference.Translator, output_handler: output_
 
 
 def translate(output_handler: output_handler.OutputHandler, source_data: Iterable[str],
-                    translator: inference.Translator, chunk_id: int = 0) -> float:
+                    translator: inference.Translator, chunk_id: int = 0,
+                    reference_data: Iterable[str] = None) -> float:
     """
     Translates each line from source_data, calling output handler after translating a batch.
 
@@ -143,11 +148,16 @@ def translate(output_handler: output_handler.OutputHandler, source_data: Iterabl
     :param source_data: A enumerable list of source sentences that will be translated.
     :param translator: The translator that will be used for each line of input.
     :param chunk_id: Global id of the chunk.
+    :param reference_data: A enumerable list of reference sentences that will be force aligned to the source.
     :return: Total time taken.
     """
 
     tic = time.time()
-    trans_inputs = [translator.make_input(i, line) for i, line in enumerate(source_data, chunk_id + 1)]
+    trans_inputs = [translator.make_input(i, line, reference)
+                    for i, (line, reference) in enumerate(itertools.zip_longest(source_data,
+                                                                                reference_data
+                                                                                    if reference_data else [None]),
+                                                          chunk_id + 1)]
     trans_outputs = translator.translate(trans_inputs)
     total_time = time.time() - tic
     batch_time = total_time / len(trans_inputs)
