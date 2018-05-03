@@ -33,6 +33,14 @@ import vocab
 logger = logging.getLogger(__name__)
 
 
+def align_idx_offset(step):
+    if step < C.MAX_JUMP:
+        lower_offset = abs(step - C.MAX_JUMP)
+    else:
+        lower_offset = 0
+    return step - C.MAX_JUMP + lower_offset
+
+
 class InferenceModel(model.SockeyeModel):
     """
     InferenceModel is a SockeyeModel that supports three operations used for inference/decoding:
@@ -346,6 +354,7 @@ class InferenceModel(model.SockeyeModel):
                     prev_word: mx.nd.NDArray,
                     bucket_key: Tuple[int, int],
                     model_state: 'ModelState',
+                    step: int,
                     prev_alignment: mx.nd.NDArray = None,
                     last_alignment: mx.nd.NDArray = None,
                     previous_jump: mx.nd.NDArray = None,
@@ -361,8 +370,12 @@ class InferenceModel(model.SockeyeModel):
         alignment_begin_idx = -1 if use_unaligned else 0
         alignment_max_length = 1
         if self.alignment_based and not self.alignment_model:
-            alignment_end_idx = actual_source_length
-            alignment_max_length = bucket_key[0] + 1 #extra position for handling unaliged target words
+            if step + C.MAX_JUMP + 1 < actual_source_length:
+                alignment_end_idx = 2*C.MAX_JUMP + 1
+            else:
+                alignment_end_idx = actual_source_length
+
+            alignment_max_length = 2*C.MAX_JUMP + 2  #extra position for handling unaliged target words
         elif self.alignment_model:
             if use_unaligned:
                 alignment_end_idx = 0
@@ -382,12 +395,12 @@ class InferenceModel(model.SockeyeModel):
                 alignment_shape = e[1]
                 break
 
-        out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
+        out_result , attention_probs_result , alignment_result, model_state_result = None, None, None, None
         new_states = [None] * len(model_state.states)
         previous_jump = [previous_jump] if previous_jump is not None else []
         for align_pos in range(alignment_begin_idx,alignment_end_idx):
-            j = align_pos
-            j = j + 1 if use_unaligned else j
+            align_idx = align_idx_offset(step) + align_pos if align_pos >= 0 else align_pos
+            j = align_pos + 1 if use_unaligned else align_pos
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
@@ -398,7 +411,7 @@ class InferenceModel(model.SockeyeModel):
                         alignment = [prev_alignment + 1]
                 else:
                     #hypothesize alignment
-                    alignment = [align_pos*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
+                    alignment = [align_idx*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
                     if alignment_result is None:
                         alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
                     alignment_result[j,:,:] = alignment[0]
@@ -1092,6 +1105,7 @@ class Translator:
                 continue
             decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key,
                                                                                        state,
+                                                                                       step=step,
                                                                                        actual_source_length=actual_soruce_length,
                                                                                        use_unaligned=self.use_unaligned)
             # Compute logits and softmax with restricted vocabulary
@@ -1115,7 +1129,11 @@ class Translator:
             if not model.alignment_model:
                 continue
             has_align_model = True
-            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment,
+            probs, _, state, _ = model.run_decoder(prev_word=prev_word,
+                                                   bucket_key=bucket_key,
+                                                   model_state=state,
+                                                   prev_alignment=prev_alignment,
+                                                   step=step,
                                                    last_alignment=last_alignment,
                                                    previous_jump=previous_jump,
                                                    actual_source_length=actual_soruce_length,
@@ -1328,8 +1346,8 @@ class Translator:
         models_output_layer_b = list()
         pad_dist = self.pad_dist
         #TODO (Tamer) remove instate from init?
-        pad_dist = pad_dist = mx.nd.full((self.batch_size * self.beam_size,
-                                          source_length +1 if self.models[0].alignment_based else 1,
+        pad_dist = mx.nd.full((self.batch_size * self.beam_size,
+                                          2*C.MAX_JUMP + 2 if self.models[0].alignment_based else 1,
                                           len(self.vocab_target)),
                                   val=np.inf, ctx=self.context)
         vocab_slice_ids = None  # type: mx.nd.NDArray
@@ -1415,19 +1433,20 @@ class Translator:
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
                 sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
-                if reference is not None and len(reference)>0:
-                    sliced_scores = sliced_scores[:, :, reference[:, t - 1].astype("int32").asnumpy()]
+                if reference is not None and len(reference) > 0:
+                    sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
                 (best_hyp_indices_np[rows], best_hyp_pos_indices_np[rows] , best_word_indices_np[rows]), \
                     scores_accumulated_np[rows] = utils.smallest_k(sliced_scores, self.beam_size, t == 1)
                 # offsetting since the returned smallest_k() indices were slice-relative
                 best_hyp_indices_np[rows] += rows.start
-                if reference is not None and len(reference)>0:
-                    best_word_indices_np[rows] = reference[:, t - 1].astype("int32").asnumpy()
+                if reference is not None and len(reference) > 0:
+                    best_word_indices_np[rows] = reference[sent, t - 1].astype("int32").asnumpy()
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np
-            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - (1 if self.use_unaligned else 0)
+            offset = align_idx_offset(t)
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - offset - (1 if self.use_unaligned else 0)
             best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
             scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
@@ -1459,7 +1478,7 @@ class Translator:
             #(7) update previous alignment
             if alignment_based:
                 alignment = mx.nd.take(alignment,best_hyp_indices)
-                alignment[:,t] =  best_hyp_pos_indices
+                alignment[:,t] = best_hyp_pos_indices
                 alignment_jump = alignment_jump_offset + alignment[:,t] - (alignment[:,t-1]
                                                                            if t>1
                                                                            else mx.nd.zeros_like(alignment[:,t]))
