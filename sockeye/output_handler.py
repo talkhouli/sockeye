@@ -139,7 +139,7 @@ class AlignmentsOutputHandler(StringOutputHandler):
         :param t_walltime: Total wall-clock time for translation.
         """
         alignments = " ".join(
-            ["S %d %d" % (j, i) if j > -1 else "" for i, j in enumerate(t_output.alignment[1:])])
+            ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:])])
         self.stream.write("%s\n" % (alignments.strip()))
         self.stream.flush()
 
