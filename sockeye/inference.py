@@ -229,7 +229,7 @@ class InferenceModel(model.SockeyeModel):
 
             #output embedding
             output_embed_prev = None
-            if self.alignment_model:
+            if self.alignment_model and self.embedding_output is not None:
                 label_prev = mx.sym.Variable(C.ALIGNMENT_JUMP_LABEL_NAME)
                 (output_embed_prev, _, _ ) = self.embedding_output.encode(data=label_prev, data_length=None, seq_len=1)
 
