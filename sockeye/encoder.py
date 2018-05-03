@@ -55,11 +55,15 @@ class RecurrentEncoderConfig(Config):
     def __init__(self,
                  rnn_config: rnn.RNNConfig,
                  conv_config: Optional['ConvolutionalEmbeddingConfig'] = None,
-                 reverse_input: bool = False) -> None:
+                 reverse_input: bool = False,
+                 positional_embedding_type: str = C.NO_POSITIONAL_EMBEDDING,
+                 num_embed: int = 0) -> None:
         super().__init__()
         self.rnn_config = rnn_config
         self.conv_config = conv_config
         self.reverse_input = reverse_input
+        self.positional_embedding_type = positional_embedding_type
+        self.num_embed = num_embed
 
 
 class ConvolutionalEncoderConfig(Config):
@@ -103,6 +107,17 @@ def get_recurrent_encoder(config: RecurrentEncoderConfig) -> 'Encoder':
                                                           scale_up_input=False,
                                                           scale_down_positions=False,
                                                           prefix="%sadd_positional_encodings" % C.CHAR_SEQ_ENCODER_PREFIX))
+    elif config.positional_embedding_type is C.LEARNED_POSITIONAL_EMBEDDING:
+        logger.error("Recurrent encoder only supports fixed positional embeddings at the moment.")
+        exit(1)
+    elif config.positional_embedding_type is not C.NO_POSITIONAL_EMBEDDING:
+        # positional embeddings
+        encoders.append(get_positional_embedding(config.positional_embedding_type,
+                                                 config.num_embed,
+                                                 max_seq_len= 0 ,
+                                                 fixed_pos_embed_scale_up_input=True,
+                                                 fixed_pos_embed_scale_down_positions=False,
+                                                 prefix=C.SOURCE_POSITIONAL_EMBEDDING_PREFIX))
 
     encoders.append(BatchMajor2TimeMajor())
 

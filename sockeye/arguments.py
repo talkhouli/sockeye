@@ -454,6 +454,17 @@ def add_model_parameters(params):
     model_params.add_argument('--rnn-context-gating', action="store_true",
                               help="Enables a context gate which adaptively weighs the RNN decoder input against the "
                                    "source context vector before each update of the decoder hidden state.")
+    model_params.add_argument('--rnn-concat-previous-pre-output', action="store_true",
+                              help="Concatenate previous pre-output state right before current rnn output.")
+    model_params.add_argument('--rnn-encoder-positional-embedding-type',
+                              choices=C.POSITIONAL_EMBEDDING_TYPES,
+                              default=C.NO_POSITIONAL_EMBEDDING,
+                              help='The type of positional embedding. Source positions are encoded '
+                                   'into the last encoder state. Default: %(default)s.')
+    model_params.add_argument('--rnn-label-num-layers',
+                              type=int_greater_or_equal(0),
+                              default=0,
+                              help='Number of rnn layers for previous output label. Default: %(default)s.')
 
     # transformer arguments
     model_params.add_argument('--transformer-model-size',
@@ -537,6 +548,11 @@ def add_model_parameters(params):
     model_params.add_argument('--rnn-attention-mhdot-heads',
                               type=int, default=None,
                               help='Number of heads for Multi-head dot attention. Default: %(default)s.')
+    model_params.add_argument('--rnn-attention-context-positional-embedding-type',
+                              choices=C.POSITIONAL_EMBEDDING_TYPES,
+                              default=C.NO_POSITIONAL_EMBEDDING,
+                              help='The type of positional embedding. Aligned positions are encoded '
+                                   'into the weighted source context. Default: %(default)s.')
 
     model_params.add_argument('--weight-tying',
                               action='store_true',
@@ -580,6 +596,26 @@ def add_model_parameters(params):
                               help="concatenate source context selected using alignment with"
                                    "attention-weighted context. Value determines how often"
                                    "this takes place during training. Default: %(default)s.")
+
+    model_params.add_argument('--alignment-interpolation',
+                              action='store_true',
+                              help='Turn on attention-alignment interpolation. Default: %(default)s.')
+
+    model_params.add_argument('--dynamic-alignment-interpolation',
+                              action='store_true',
+                              help='Turn on dynamic attention-alignment interpolation using position '
+                                   'dependent computed interpolation weights. Default: %(default)s.')
+    model_params.add_argument('--uniform-unaligned-context',
+                              action='store_true',
+                              help='use uniform source context weights for unaligned words of negative source index'
+                                   'to compute the alignment model.'
+                                   'Default: %(default)s.')
+    model_params.add_argument('--last-aligned-context',
+                              action='store_true',
+                              help='use last aligned source position as source context of unaligned target words '
+                                   'to compute the alignment model.'
+                                   'Default: %(default)s.')
+
 
 
 def add_training_args(params):
@@ -873,6 +909,10 @@ def add_inference_args(params):
                                default=None,
                                help='Output file to write translations to. '
                                     'If not given, will write to stdout.')
+
+    decode_params.add_argument(C.INFERENCE_ARG_REFERENCE_LONG, C.INFERENCE_ARG_REFERENCE_SHORT,
+                               default=None,
+                               help='Reference (target) file for forced alignment. ')
 
     decode_params.add_argument('--models', '-m',
                                required=True,

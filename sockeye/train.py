@@ -385,7 +385,9 @@ def create_encoder_config(args: argparse.Namespace,
                                      first_residual_layer=args.rnn_first_residual_layer,
                                      forget_bias=args.rnn_forget_bias),
             conv_config=config_conv,
-            reverse_input=args.rnn_encoder_reverse_input)
+            reverse_input=args.rnn_encoder_reverse_input,
+            positional_embedding_type=args.rnn_encoder_positional_embedding_type,
+            num_embed=args.num_embed[0])
         encoder_num_hidden = args.rnn_num_hidden
 
     return config_encoder, encoder_num_hidden
@@ -456,7 +458,11 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
                                                          config_coverage=config_coverage,
                                                          num_heads=args.rnn_attention_mhdot_heads,
                                                          alignment_bias=args.alignment_bias,
-                                                         alignment_assisted=args.alignment_assisted)
+                                                         alignment_assisted=args.alignment_assisted,
+                                                         alignment_interpolation=args.alignment_interpolation,
+                                                         dynamic_alignment_interpolation = args.dynamic_alignment_interpolation,
+                                                         uniform_unaligned_context=args.uniform_unaligned_context,
+                                                         last_aligned_context=args.last_aligned_context)
 
         _, decoder_rnn_dropout_inputs = args.rnn_dropout_inputs
         _, decoder_rnn_dropout_states = args.rnn_dropout_states
@@ -479,8 +485,11 @@ def create_decoder_config(args: argparse.Namespace,  encoder_num_hidden: int) ->
             context_gating=args.rnn_context_gating,
             layer_normalization=args.layer_normalization,
             attention_in_upper_layers=args.rnn_attention_in_upper_layers,
-            alignment_model=args.output_classes == C.ALIGNMENT_JUMP
-        )
+            alignment_model=args.output_classes == C.ALIGNMENT_JUMP,
+            concat_previous_pre_output=args.rnn_concat_previous_pre_output,
+            positional_embedding_type=args.rnn_attention_context_positional_embedding_type,
+            max_seq_len_target=max_seq_len_target,
+            label_num_layers=args.rnn_label_num_layers)
 
     return config_decoder
 
@@ -521,6 +530,7 @@ def create_model_config(args: argparse.Namespace,
     max_seq_len_source, max_seq_len_target = args.max_seq_len
     num_embed_source, num_embed_target = args.num_embed
     embed_dropout_source, embed_dropout_target = args.embed_dropout
+    embed_dropout_output = embed_dropout_target
 
     check_encoder_decoder_args(args)
 
@@ -542,6 +552,9 @@ def create_model_config(args: argparse.Namespace,
     config_embed_target = encoder.EmbeddingConfig(vocab_size=vocab_target_size,
                                                   num_embed=num_embed_target,
                                                   dropout=embed_dropout_target)
+    config_embed_output = encoder.EmbeddingConfig(vocab_size=vocab_target_size if args.output_classes== C.WORDS else C.NUM_ALIGNMENT_JUMPS,
+                                                  num_embed=config_decoder.rnn_config.num_hidden,
+                                                  dropout=embed_dropout_output)
 
     config_loss = loss.LossConfig(name=args.loss,
                                   vocab_size=vocab_target_size if args.output_classes == C.WORDS else C.NUM_ALIGNMENT_JUMPS,
@@ -555,6 +568,7 @@ def create_model_config(args: argparse.Namespace,
                                      vocab_target_size=vocab_target_size,
                                      config_embed_source=config_embed_source,
                                      config_embed_target=config_embed_target,
+                                     config_embed_output=config_embed_output,
                                      config_encoder=config_encoder,
                                      config_decoder=config_decoder,
                                      config_loss=config_loss,

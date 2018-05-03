@@ -103,11 +103,11 @@ class TrainingModel(model.SockeyeModel):
         source_length = utils.compute_lengths(source)
         target = mx.sym.Variable(C.TARGET_NAME)
         target_length = utils.compute_lengths(target)
-        labels = mx.sym.reshape(data=mx.sym.Variable(C.TARGET_LABEL_NAME
-                                                     if self.config.output_classes == C.WORDS
-                                                     else C.ALIGNMENT_JUMP_LABEL_NAME),
-                                shape=(-1,))
+        labels = mx.sym.Variable(C.TARGET_LABEL_NAME
+                                        if self.config.output_classes == C.WORDS
+                                            else C.ALIGNMENT_JUMP_LABEL_NAME)
         alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
+        last_alignment = mx.sym.Variable(C.LAST_ALIGNMENT_NAME) if self.config.config_data.alignment is not None else None
 
         model_loss = loss.get_loss(self.config.config_loss)
 
@@ -131,6 +131,9 @@ class TrainingModel(model.SockeyeModel):
              target_embed_length,
              target_embed_seq_len) = self.embedding_target.encode(target, target_length, target_seq_len)
 
+            #output embedding
+            (output_embed, _, _ ) = self.embedding_output.encode(labels, target_length, target_seq_len)
+
             # encoder
             # source_encoded: (source_encoded_length, batch_size, encoder_depth)
             (source_encoded,
@@ -143,7 +146,9 @@ class TrainingModel(model.SockeyeModel):
             # target_decoded: (batch-size, target_len, decoder_depth)
             target_decoded = self.decoder.decode_sequence(source_encoded, source_encoded_length, source_encoded_seq_len,
                                                           target_embed, target_embed_length, target_embed_seq_len,
-                                                          alignment)
+                                                          alignment,
+                                                          last_alignment,
+                                                          output_embed)
 
             # target_decoded: (batch_size * target_seq_len, rnn_num_hidden)
             target_decoded = mx.sym.reshape(data=target_decoded, shape=(-3, 0))
@@ -152,7 +157,9 @@ class TrainingModel(model.SockeyeModel):
             # logits: (batch_size * target_seq_len, output_layer_size)
             logits = self.output_layer(target_decoded)
 
-            probs = model_loss.get_loss(logits, labels)
+            labels_out = mx.sym.reshape(data=labels,
+                                    shape=(-1,))
+            probs = model_loss.get_loss(logits, labels_out)
 
       #      return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.attention.align_bias_prob)] +
       #                          [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
@@ -162,8 +169,10 @@ class TrainingModel(model.SockeyeModel):
       #                          [utils.debug_symbol_standalone(sym,suffix="%d"%idx) for idx,sym in
       #                              enumerate(self.decoder.attention.debug_alignment_one_hot) if sym is not None]), data_names, label_names
             if self.decoder.debug_alignment is not None:
-                return mx.sym.Group(probs + [utils.debug_symbol_standalone(self.decoder.debug_alignment)]  + \
-                                [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
+                return mx.sym.Group(probs +
+                                    [utils.debug_symbol_standalone(self.decoder.debug_alignment)]  + \
+                                    [utils.debug_symbol_standalone(self.decoder.debug_last_alignment)] + \
+                                    [utils.debug_symbol_standalone(sym, suffix="%d" % idx) for idx, sym in
                                                               enumerate(self.decoder.debug_attention)  if sym is not None]
                                 ), data_names, label_names
             else:

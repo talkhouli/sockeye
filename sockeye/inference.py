@@ -83,6 +83,8 @@ class InferenceModel(model.SockeyeModel):
         self.batch_size = batch_size
         self.context = context
         self.alignment_based= self.config.config_data.alignment is not None
+        self.use_unaligned = self.config.config_decoder.attention_config.uniform_unaligned_context or \
+                                self.config.config_decoder.attention_config.last_aligned_context
         self.alignment_model = self.config.output_classes == C.ALIGNMENT_JUMP
         self._build_model_components()
 
@@ -225,7 +227,14 @@ class InferenceModel(model.SockeyeModel):
             # (batch_size, num_embed)
             target_embed_prev, _, _ = self.embedding_target.encode(data=target_prev, data_length=None, seq_len=1)
 
+            #output embedding
+            output_embed_prev = None
+            if self.alignment_model:
+                label_prev = mx.sym.Variable(C.ALIGNMENT_JUMP_LABEL_NAME)
+                (output_embed_prev, _, _ ) = self.embedding_output.encode(data=label_prev, data_length=None, seq_len=1)
+
             alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.alignment_based else None
+            last_alignment = mx.sym.Variable(C.LAST_ALIGNMENT_NAME) if self.alignment_based else None
 
             # decoder
             # target_decoded: (batch_size, decoder_depth)
@@ -235,7 +244,9 @@ class InferenceModel(model.SockeyeModel):
                                                 target_embed_prev,
                                                 source_encoded_seq_len,
                                                 *states,
-                                                alignment=alignment)
+                                                alignment=alignment,
+                                                last_alignment=last_alignment,
+                                                output_embed_prev=output_embed_prev)
 
             if self.decoder_return_logit_inputs:
                 # skip output layer in graph
@@ -247,7 +258,16 @@ class InferenceModel(model.SockeyeModel):
                     logits /= self.softmax_temperature
                 outputs = mx.sym.softmax(data=logits, name=C.SOFTMAX_NAME)
 
-            data_names = [C.TARGET_NAME] + state_names + ([C.ALIGNMENT_NAME] if self.alignment_based else [])
+            data_names = [C.TARGET_NAME] + state_names +\
+                            ([C.LAST_ALIGNMENT_NAME
+                                if self.alignment_model
+                                    and self.config.config_decoder.attention_config.last_aligned_context==True
+                                else C.ALIGNMENT_NAME]
+                             if self.alignment_based else []) + \
+                         ([C.ALIGNMENT_JUMP_LABEL_NAME] if self.alignment_model
+                                                           and self.config.config_decoder.label_num_layers > 0
+                          else [] )
+
             label_names = []  # type: List[str]
             return mx.sym.Group([outputs, attention_probs] + states), data_names, label_names
 
@@ -285,9 +305,18 @@ class InferenceModel(model.SockeyeModel):
                                       target_max_length,
                                       self.encoder.get_encoded_seq_len(source_max_length),
                                       self.encoder.get_num_hidden()) +
-            ([mx.io.DataDesc(name=C.ALIGNMENT_NAME,
+            ([mx.io.DataDesc(name=C.LAST_ALIGNMENT_NAME
+                                    if self.alignment_model \
+                                        and self.config.config_decoder.attention_config.last_aligned_context==True
+                                    else C.ALIGNMENT_NAME,
                             shape=(self.batch_size * self.beam_size,1),
-                            layout="NT")] if self.alignment_based else []))
+                            layout="NT")] if self.alignment_based else []) +
+            ([mx.io.DataDesc(name=C.ALIGNMENT_JUMP_LABEL_NAME,
+                            shape=(self.batch_size * self.beam_size, 1),
+                            layout="NT")] if self.alignment_model \
+                                    and self.config.config_decoder.label_num_layers > 0 else [])
+        )
+
 
     def run_encoder(self,
                     source: mx.nd.NDArray,
@@ -318,7 +347,10 @@ class InferenceModel(model.SockeyeModel):
                     bucket_key: Tuple[int, int],
                     model_state: 'ModelState',
                     prev_alignment: mx.nd.NDArray = None,
-                    actual_source_length: int = -1) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
+                    last_alignment: mx.nd.NDArray = None,
+                    previous_jump: mx.nd.NDArray = None,
+                    actual_source_length: int = -1,
+                    use_unaligned: bool = True) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
         Runs forward pass of the single-step decoder.
 
@@ -326,8 +358,24 @@ class InferenceModel(model.SockeyeModel):
         """
         #lexical alignment-based model: alignments hypothesized
         #alignment model: previous alignments used
-        alignment_end_idx = actual_source_length if self.alignment_based and not self.alignment_model else 1
-        alignment_max_length = bucket_key[0] if self.alignment_based and not self.alignment_model else 1
+        alignment_begin_idx = -1 if use_unaligned else 0
+        alignment_max_length = 1
+        if self.alignment_based and not self.alignment_model:
+            alignment_end_idx = actual_source_length
+            alignment_max_length = bucket_key[0] + 1 #extra position for handling unaliged target words
+        elif self.alignment_model:
+            if use_unaligned:
+                alignment_end_idx = 0
+            else:
+                alignment_end_idx = 1
+        else:
+            alignment_end_idx = 1
+
+
+
+        #alignment_end_idx = actual_source_length if self.alignment_based and not self.alignment_model else 0
+        #extra position for handling unaliged target words
+        #alignment_max_length = bucket_key[0]+1 if self.alignment_based and not self.alignment_model else 1
         alignment_shape = None
         for e in self._get_decoder_data_shapes(bucket_key):
             if e[0] == C.ALIGNMENT_NAME:
@@ -336,20 +384,27 @@ class InferenceModel(model.SockeyeModel):
 
         out_result , attention_probs_result , alignment_result, model_state_result= None , None, None, None
         new_states = [None] * len(model_state.states)
-        for j in range(alignment_end_idx):
+        previous_jump = [previous_jump] if previous_jump is not None else []
+        for align_pos in range(alignment_begin_idx,alignment_end_idx):
+            j = align_pos
+            j = j + 1 if use_unaligned else j
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
-                    alignment = [prev_alignment + 1] # shift by 1 due to BOS
+                    # shift by 1 due to BOS
+                    if self.config.config_decoder.attention_config.last_aligned_context:
+                        alignment = [last_alignment + 1]
+                    else:
+                        alignment = [prev_alignment + 1]
                 else:
                     #hypothesize alignment
-                    alignment = [j*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
+                    alignment = [align_pos*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
                     if alignment_result is None:
                         alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
                     alignment_result[j,:,:] = alignment[0]
                     #alignment_result.append(copy.deepcopy(alignment))
             batch = mx.io.DataBatch(
-                data=[prev_word.as_in_context(self.context)] + model_state.states + alignment,
+                data=[prev_word.as_in_context(self.context)] + model_state.states + alignment + previous_jump,
                 label=None,
                 bucket_key=bucket_key,
                 provide_data=self._get_decoder_data_shapes(bucket_key))
@@ -531,6 +586,7 @@ TranslatorInput = NamedTuple('TranslatorInput', [
     ('id', int),
     ('sentence', str),
     ('tokens', Tokens),
+    ('reference_tokens', Tokens),
 ])
 """
 Required input for Translator.
@@ -541,6 +597,11 @@ Required input for Translator.
 """
 
 InputChunk = NamedTuple("InputChunk",
+                        [("id", int),
+                         ("chunk_id", int),
+                         ("tokens", Tokens)])
+
+ReferenceChunk = NamedTuple("ReferenceChunk",
                         [("id", int),
                          ("chunk_id", int),
                          ("tokens", Tokens)])
@@ -555,6 +616,7 @@ A chunk of a TranslatorInput.
 TranslatorOutput = NamedTuple('TranslatorOutput', [
     ('id', int),
     ('translation', str),
+    ('alignment', str),
     ('tokens', List[str]),
     ('attention_matrix', np.ndarray),
     ('score', float),
@@ -602,13 +664,13 @@ class ModelState:
     def __init__(self, states: List[mx.nd.NDArray]) -> None:
         self.states = states
 
-    def sort_state(self, best_hyp_indices: mx.nd.NDArray, best_hyp_pos_indices: mx.nd.NDArray = None):
+    def sort_state(self, best_hyp_indices: mx.nd.NDArray, best_hyp_pos_idx_indices: mx.nd.NDArray = None):
         """
         Sorts states according to k-best order from last step in beam search.
         """
         #TODO (Tamer) is there a way to do mulitple indexing in mxnet without resorting to numpy?
-        pos_indices =  np.array([0]) if self.states[0].shape[0] == 1 or best_hyp_pos_indices is None \
-                                     else   best_hyp_pos_indices.asnumpy()
+        pos_indices =  np.array([0]) if self.states[0].shape[0] == 1 or best_hyp_pos_idx_indices is None \
+                                     else   best_hyp_pos_idx_indices.asnumpy()
         for idx,state in enumerate(self.states):
             state_np = state.asnumpy()
             self.states[idx] = mx.nd.array(state_np[pos_indices, best_hyp_indices.asnumpy()], state.context)
@@ -742,7 +804,7 @@ class Translator:
         self.align_weight = align_weight
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
-        max_output_length = self.models[0].get_max_output_length(self.max_input_length)
+        self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
         if bucket_source_width > 0:
             self.buckets_source = data_io.define_buckets(self.max_input_length, step=bucket_source_width)
         else:
@@ -781,16 +843,19 @@ class Translator:
         return -mx.nd.log(mx.nd.softmax(log_probs))
 
     @staticmethod
-    def make_input(sentence_id: int, sentence: str) -> TranslatorInput:
+    def make_input(sentence_id: int, sentence: str, reference: str) -> TranslatorInput:
         """
         Returns TranslatorInput from input_string
 
         :param sentence_id: Input sentence id.
         :param sentence: Input sentence.
+        :param sentence: Reference (target) sentence.
         :return: Input for translate method.
         """
         tokens = list(data_io.get_tokens(sentence))
-        return TranslatorInput(id=sentence_id, sentence=sentence.rstrip(), tokens=tokens)
+        reference_tokens = list(data_io.get_tokens(reference)) if reference else []
+        return TranslatorInput(id=sentence_id, sentence=sentence.rstrip(), tokens=tokens,
+                               reference_tokens=reference_tokens)
 
     def translate(self, trans_inputs: List[TranslatorInput]) -> List[TranslatorOutput]:
         """
@@ -804,6 +869,7 @@ class Translator:
 
         # split into chunks
         input_chunks = [] # type: List[InputChunk]
+        reference_chunks = []  # type: List[ReferenceChunk]
         for input_idx, trans_input in enumerate(trans_inputs):
             if len(trans_input.tokens) == 0:
                 empty_translation = Translation(target_ids=[],
@@ -820,21 +886,31 @@ class Translator:
                 token_chunks = utils.chunks(trans_input.tokens, self.max_input_length)
                 input_chunks.extend(InputChunk(input_idx, chunk_id, chunk)
                                     for chunk_id, chunk in enumerate(token_chunks))
+                if trans_input.reference_tokens:
+                    reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
             else:
                 input_chunks.append(InputChunk(input_idx, 0, trans_input.tokens))
+                if trans_input.reference_tokens:
+                    reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
         # Sort longest to shortest (to rather fill batches of shorter than longer sequences)
-        input_chunks = sorted(input_chunks, key=lambda chunk: len(chunk.tokens), reverse=True)
-
+        input_chunks,reference_chunks  = (list(t) for t in zip(*sorted(itertools.zip_longest(input_chunks,reference_chunks),
+                                                key=lambda args : len(args[0].tokens),
+                                                reverse=True)))
         # translate in batch-sized blocks over input chunks
-        for batch_id, chunks in enumerate(utils.grouper(input_chunks, self.batch_size)):
+        for batch_id, (chunks, ref_chunks) in enumerate(itertools.zip_longest(utils.grouper(input_chunks, self.batch_size),
+                                                                utils.grouper(reference_chunks, self.batch_size)
+                                                                    if reference_chunks is not None else [None])):
             batch = [chunk.tokens for chunk in chunks]
+            reference_batch = [chunk.tokens for chunk in ref_chunks] if len(ref_chunks)>0 \
+                                                                        and ref_chunks[0] is not None else []
             logger.debug("Translating batch %d", batch_id)
             # underfilled batch will be filled to a full batch size with copies of the 1st input
             rest = self.batch_size - len(batch)
             if rest > 0:
                 logger.debug("Extending the last batch to the full batch size (%d)", self.batch_size)
                 batch = batch + [batch[0]] * rest
-            batch_translations = self.translate_nd(*self._get_inference_input(batch),batch)
+                reference_batch = reference_batch + [reference_batch[0]] * rest
+            batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
@@ -858,28 +934,37 @@ class Translator:
 
         return results
 
-    def _get_inference_input(self, sequences: List[List[str]]) -> Tuple[mx.nd.NDArray, int]:
+    def _get_inference_input(self, sequences: List[List[str]], reference_sequences: List[List[str]] ) -> Tuple[mx.nd.NDArray, int]:
         """
         Returns NDArray of source ids (shape=(batch_size, bucket_key)) and corresponding bucket_key.
 
         :param sequences: List of lists of input tokens.
-        :return NDArray of source ids and bucket key.
+        :param sequences: List of lists of reference tokens.
+        :return NDArray of source ids, bucket key, source length, and reference ids
         """
         #+1 for EOS
         bucket_key = data_io.get_bucket(max(len(tokens)+1 for tokens in sequences), self.buckets_source)
 
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
-        for j, tokens in enumerate(sequences):
+        reference = mx.nd.zeros((len(reference_sequences), self.max_output_length)) if reference_sequences else []
+        for j, (tokens, reference_tokens) in enumerate(itertools.zip_longest(sequences,reference_sequences)):
             ids = data_io.tokens2ids(tokens,
                     self.vocab_source, has_categ_content=True)
+            reference_ids = data_io.tokens2ids(reference_tokens,
+                                     self.vocab_target, has_categ_content=True) if reference_tokens else []
             for i, wid in enumerate(ids):
                 source[j, i] = wid
             source[j,len(tokens)] = self.vocab_source[C.EOS_SYMBOL]
             #source_length needed for alignment-based models, where batch_size=len(sequences)=1
             source_length = len(tokens) + 1 # +1 for EOS
 
-        return source, bucket_key, source_length
+            for i, wid in enumerate(reference_ids):
+                reference[j, i] = wid
+            if reference_sequences:
+                reference[j,len(reference_tokens)] = self.vocab_target[C.EOS_SYMBOL]
+
+        return source, bucket_key, source_length, reference
 
     def _make_result(self,
                      trans_input: TranslatorInput,
@@ -914,6 +999,7 @@ class Translator:
 
         return TranslatorOutput(id=trans_input.id,
                                 translation=target_string,
+                                alignment=translation.alignment,
                                 tokens=target_tokens,
                                 attention_matrix=attention_matrix,
                                 score=translation.score,
@@ -932,6 +1018,7 @@ class Translator:
                      source: mx.nd.NDArray,
                      source_length: int,
                      actual_source_length: int,
+                     reference: mx.nd.NDArray,
                      original_source: List[List[str]]) -> List[Translation]:
         """
         Translates source of source_length, given a bucket_key.
@@ -939,11 +1026,13 @@ class Translator:
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Bucket key.
         :param actual_source_length: source_length_without padding
+                :param reference: Reference ids. Shape: (batch_size, max_output_length).
+
         :param original_source: original source words before vocabulary mappying (batch_size,)
 
         :return: Sequence of translations.
         """
-        return self._get_best_from_beam(*self._beam_search(source, source_length, actual_source_length),original_source)
+        return self._get_best_from_beam(*self._beam_search(source, source_length, actual_source_length,reference),original_source)
 
     def _encode(self, sources: mx.nd.NDArray, source_length: int) -> List[ModelState]:
         """
@@ -969,8 +1058,10 @@ class Translator:
                      models_output_layer_w: List[mx.nd.NDArray],
                      models_output_layer_b: List[mx.nd.NDArray],
                      prev_alignment: mx.nd.NDArray,
-                     coverage_vector: mx.nd.NDArray) \
-            -> Tuple[mx.nd.NDArray, mx.nd.NDArray, List[ModelState]]:
+                     coverage_vector: mx.nd.NDArray,
+                     last_alignment: mx.nd.NDArray,
+                     previous_jump: mx.nd.NDArray) \
+            -> Tuple[mx.nd.NDArray, mx.nd.NDArray, List[ModelState] ]:
         """
         Returns decoder predictions (combined from all models), attention scores, and updated states.
 
@@ -984,6 +1075,8 @@ class Translator:
         :param models_output_layer_b: Custom model biases for logit computation (empty for none).
         :param prev_alignment: last aligned source positions
         :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
+        :param last_alignment: (batch* beam_size,1) last aligned source positions
+        :param previous_jump: (batch* beam_size,1) source jump
         :return: (probs, attention scores, list of model states)
         """
         bucket_key = (source_length, step)
@@ -997,7 +1090,10 @@ class Translator:
             #alignment models evaluated later
             if model.alignment_model:
                 continue
-            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key, state, actual_source_length=actual_soruce_length)
+            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key,
+                                                                                       state,
+                                                                                       actual_source_length=actual_soruce_length,
+                                                                                       use_unaligned=self.use_unaligned)
             # Compute logits and softmax with restricted vocabulary
             if self.restrict_lexicon:
                 logits = model.output_layer(decoder_outputs, out_w, out_b)
@@ -1019,7 +1115,11 @@ class Translator:
             if not model.alignment_model:
                 continue
             has_align_model = True
-            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment, actual_source_length=actual_soruce_length)
+            probs, _, state, _ = model.run_decoder(prev_word, bucket_key, state, prev_alignment,
+                                                   last_alignment=last_alignment,
+                                                   previous_jump=previous_jump,
+                                                   actual_source_length=actual_soruce_length,
+                                                   use_unaligned=self.use_unaligned)
             align_model_probs.append(probs)
             model_states.append(state)
 
@@ -1027,16 +1127,17 @@ class Translator:
             align_neg_logprobs, _ = self._combine_predictions_per_position(align_model_probs) # Alignment mo
             neg_logprobs = self._combine_lex_align_scores(align_neg_logprobs, neg_logprobs,
                                                           prev_alignment, new_alignment, coverage_vector,
-                                                          actual_soruce_length)
+                                                          actual_soruce_length, last_alignment)
         return neg_logprobs, attention_probs, model_states
 
     def _combine_lex_align_scores(self,
-                                align_neg_logprobs: mx.nd.NDArray,
-                                lex_neg_logprobs: mx.nd.NDArray,
-                                prev_alignment: mx.nd.NDArray,
-                                new_alignment: mx.nd.NDArray,
-                                coverage_vector: mx.ndarray.NDArray,
-                                actual_soruce_length: int) -> mx.nd.NDArray:
+                                  align_neg_logprobs: mx.nd.NDArray,
+                                  lex_neg_logprobs: mx.nd.NDArray,
+                                  prev_alignment: mx.nd.NDArray,
+                                  new_alignment: mx.nd.NDArray,
+                                  coverage_vector: mx.ndarray.NDArray,
+                                  actual_soruce_length: int,
+                                  last_alignment: mx.ndarray.NDArray) ->  mx.nd.NDArray:
 
 
         """
@@ -1048,14 +1149,19 @@ class Translator:
         :param new_alignment: Shape(source_length, beam_size, source_length)
         :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
         :param actual_soruce_length: actual source length without padding
+        :param last_alignment: (batch* beam_size,1) last aligned source positions
         :return: Combined weighted negative log probabilities
         """
         combined_result = lex_neg_logprobs
+        alignment_jump_idx = None
         for j in range(new_alignment.shape[0]):
             disallowed_alignments = self._invalid_alignments(prev_alignment,
                                                             new_alignment[j][0],
                                                             coverage_vector)
-            alignment_jump_idx = (C.NUM_ALIGNMENT_JUMPS-1)/2 + new_alignment[j][0]-prev_alignment
+            alignment_jump_idx =  C.UNALIGNED_JUMP_LABEL * \
+                                        mx.ndarray.ones_like(data=last_alignment, ctx=self.context, dtype='int32') \
+                                        if new_alignment[j][0] == C.UNALIGNED_SOURCE_INDEX and self.use_unaligned \
+                                                else   (C.NUM_ALIGNMENT_JUMPS-1)/2 + new_alignment[j][0] - last_alignment
             #jump_scores = mx.ndarray.batch_take(align_neg_logprobs[0],alignment_jump_idx)
             jump_scores = mx.ndarray.pick(align_neg_logprobs[0], alignment_jump_idx, keepdims=True)
 
@@ -1064,7 +1170,8 @@ class Translator:
                                              mx.nd.ones(shape=lex_neg_logprobs[j].shape,ctx=self.context)*np.inf,
                                              self.lex_weight * lex_neg_logprobs[j] + self.align_weight * jump_scores)
             #enforce sentence-end to sentence-end alignment
-            if j != actual_soruce_length -1 :
+            if new_alignment[j][0] != actual_soruce_length -1 and \
+                    new_alignment[j][0] != C.UNALIGNED_SOURCE_INDEX:
                 combined_result[j,:,self.vocab_target[C.EOS_SYMBOL]] = np.inf
 
         return combined_result
@@ -1081,6 +1188,10 @@ class Translator:
         :param coverage_vector (batch* beam_size, source_length) coverage vector for each beam entry
         :return: List of invalid alignment indices within the beam
         """
+
+        #unaligned positions produce no violations
+        if new_alignment == C.UNALIGNED_SOURCE_INDEX and self.use_unaligned:
+            return mx.nd.zeros(ctx=self.context,shape=(self.beam_size*self.batch_size,1))
 
         max_jump = C.MAX_JUMP
         jump = new_alignment - prev_alignment
@@ -1152,7 +1263,8 @@ class Translator:
     def _beam_search(self,
                      source: mx.nd.NDArray,
                      source_length: int,
-                     actual_source_length: int) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, \
+                     actual_source_length: int,
+                     reference: mx.nd.NDArray) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, mx.nd.NDArray, \
                                                          mx.nd.NDArray, mx.nd.NDArray]:
         """
         Translates multiple sentences using beam search.
@@ -1160,6 +1272,7 @@ class Translator:
         :param source: Source ids. Shape: (batch_size, bucket_key).
         :param source_length: Max source length.
         :param actual_source_length: Source length without padding
+        :param reference: Reference ids. Shape: (batch_size, max_output_length).
         :return List of lists of word ids, list of attentions, array of accumulated length-normalized
                 negative log-probs, lengths, coverage vector, alignments
         """
@@ -1188,7 +1301,10 @@ class Translator:
 
         # best_hyp_indices: row indices of smallest scores (ascending).
         best_hyp_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
-        # best_hyp_pos_indices: related to alignment-based NMT: source position indices of smallest scores (ascending).
+        # best_hyp_pos_idx_indices: related to alignment-based NMT: source position indices of smallest scores (ascending).
+        best_hyp_pos_idx_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
+        # best_hyp_pos_indices: related to alignment-based NMT: source
+        # alignment possible including unaligned position indices as defined in constants.py
         best_hyp_pos_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
         # best_word_indices: column indices of smallest scores (ascending).
         best_word_indices = mx.nd.zeros((self.batch_size * self.beam_size,), ctx=self.context, dtype='int32')
@@ -1213,7 +1329,7 @@ class Translator:
         pad_dist = self.pad_dist
         #TODO (Tamer) remove instate from init?
         pad_dist = pad_dist = mx.nd.full((self.batch_size * self.beam_size,
-                                          source_length if self.models[0].alignment_based else 1,
+                                          source_length +1 if self.models[0].alignment_based else 1,
                                           len(self.vocab_target)),
                                   val=np.inf, ctx=self.context)
         vocab_slice_ids = None  # type: mx.nd.NDArray
@@ -1244,12 +1360,17 @@ class Translator:
 
         #initial alignments set to -1
         alignment = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,max_output_length),dtype='int32') -1
-
+        alignment_jump = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,1), dtype='int32')
+        #keep track of last aligned position needed for handling jumps after unaligned target words
+        last_aligned = mx.nd.zeros(ctx=self.context,shape=(self.batch_size * self.beam_size,),dtype='int32') -1
+        alignment_based = any([model.alignment_based for model in self.models])
+        self.use_unaligned = any([model.use_unaligned for model in self.models])
         logger.info("source length: %d",actual_source_length)
+        alignment_jump_offset = (C.NUM_ALIGNMENT_JUMPS - 1) / 2
         for t in range(1, max_output_length):
 
             # (1) obtain next predictions and advance models' state
-            # scores: (batch_size * beam_size, target_vocab_size)
+            # scores: (batch_size * beam_size, target_vocab_sicefmntze)
             # attention_scores: (batch_size * beam_size, bucket_key)
             scores, attention_scores, model_states = self._decode_step(sequences,
                                                                        t,
@@ -1260,7 +1381,9 @@ class Translator:
                                                                        models_output_layer_w,
                                                                        models_output_layer_b,
                                                                        prev_alignment=mx.nd.slice_axis(alignment,axis=1,begin=t-1,end=t),
-                                                                       coverage_vector=coverage_vector)
+                                                                       coverage_vector=coverage_vector,
+                                                                       last_alignment=mx.nd.expand_dims(data=last_aligned, axis=1),
+                                                                       previous_jump=alignment_jump)
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
             #alignment_np = np.swapaxes(alignment.asnumpy(),0,1)
@@ -1292,15 +1415,20 @@ class Translator:
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
                 sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
+                if reference is not None and len(reference)>0:
+                    sliced_scores = sliced_scores[:, :, reference[:, t - 1].astype("int32").asnumpy()]
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
                 (best_hyp_indices_np[rows], best_hyp_pos_indices_np[rows] , best_word_indices_np[rows]), \
                     scores_accumulated_np[rows] = utils.smallest_k(sliced_scores, self.beam_size, t == 1)
                 # offsetting since the returned smallest_k() indices were slice-relative
                 best_hyp_indices_np[rows] += rows.start
+                if reference is not None and len(reference)>0:
+                    best_word_indices_np[rows] = reference[:, t - 1].astype("int32").asnumpy()
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np
-            best_hyp_pos_indices[:] = best_hyp_pos_indices_np
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - (1 if self.use_unaligned else 0)
+            best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
             scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
             # Map from restricted to full vocab ids if needed
@@ -1329,8 +1457,15 @@ class Translator:
                                           mx.ndarray.one_hot(best_hyp_pos_indices, depth=source_length, dtype='int32'))
 
             #(7) update previous alignment
-            alignment = mx.nd.take(alignment,best_hyp_indices)
-            alignment[:,t] =  best_hyp_pos_indices
+            if alignment_based:
+                alignment = mx.nd.take(alignment,best_hyp_indices)
+                alignment[:,t] =  best_hyp_pos_indices
+                alignment_jump = alignment_jump_offset + alignment[:,t] - (alignment[:,t-1]
+                                                                           if t>1
+                                                                           else mx.nd.zeros_like(alignment[:,t]))
+                alignment_jump = mx.nd.expand_dims(data=alignment_jump,axis=1)
+                last_aligned = mx.nd.take(last_aligned,best_hyp_indices)
+                last_aligned[:] = mx.nd.where(best_hyp_pos_indices>=0, best_hyp_pos_indices,last_aligned)
 
             # (8) determine which hypotheses in the beam are now finished
             finished = ((best_word_indices == C.PAD_ID) + (best_word_indices == self.vocab_target[C.EOS_SYMBOL]))
@@ -1339,7 +1474,7 @@ class Translator:
 
             # (9) update models' state with winning hypotheses (ascending)
             for ms in model_states:
-                ms.sort_state(best_hyp_indices,best_hyp_pos_indices)
+                ms.sort_state(best_hyp_indices,best_hyp_pos_idx_indices)
 
             #DEBUGGING
             logger.info("coverage vector[t=%d]: %s",t,

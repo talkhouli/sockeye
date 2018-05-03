@@ -64,7 +64,8 @@ class ModelConfig(Config):
                  output_classes: str,
                  weight_tying: bool = False,
                  weight_tying_type: Optional[str] = C.WEIGHT_TYING_TRG_SOFTMAX,
-                 weight_normalization: bool = False) -> None:
+                 weight_normalization: bool = False,
+                 config_embed_output: Config = None) -> None:
         super().__init__()
         self.config_data = config_data
         self.max_seq_len_source = max_seq_len_source
@@ -73,6 +74,7 @@ class ModelConfig(Config):
         self.vocab_target_size = vocab_target_size
         self.config_embed_source = config_embed_source
         self.config_embed_target = config_embed_target
+        self.config_embed_output = config_embed_output
         self.config_encoder = config_encoder
         self.config_decoder = config_decoder
         self.config_loss = config_loss
@@ -109,6 +111,7 @@ class SockeyeModel:
         self.encoder = None  # type: Optional[encoder.Encoder]
         self.embedding_target = None  # type: Optional[encoder.Embedding]
         self.decoder = None  # type: Optional[decoder.Decoder]
+        self.embedding_output = None # type: Optional[encoder.Embedding]
         self.output_layer = None  # type: Optional[layers.OutputLayer]
         self._is_built = False
         self.params = None  # type: Optional[Dict]
@@ -222,7 +225,10 @@ class SockeyeModel:
         self.embedding_target = encoder.Embedding(self.config.config_embed_target,
                                                   prefix=C.TARGET_EMBEDDING_PREFIX,
                                                   embed_weight=embed_weight_target)
-
+        self.embedding_output = encoder.Embedding(self.config.config_embed_output,
+                                                  prefix=C.OUTPUT_EMBEDDING_PREFIX,
+                                                  embed_weight=out_weight_target) \
+                                        if self.config.config_embed_output is not None else None
         # output layer
         self.output_layer = layers.OutputLayer(hidden_size=self.decoder.get_num_hidden(),
                                                vocab_size=self.config.output_layer_size,

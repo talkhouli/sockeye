@@ -47,6 +47,8 @@ def get_output_handler(output_type: str,
         return AlignPlotHandler(plot_prefix="align" if output_fname is None else output_fname)
     elif output_type == C.OUTPUT_HANDLER_ALIGN_TEXT:
         return AlignTextHandler(sure_align_threshold)
+    elif output_type == C.OUTPUT_HANDLER_ALIGNMENT:
+        return AlignmentsOutputHandler(output_stream)
     else:
         raise ValueError("unknown output type")
 
@@ -115,6 +117,31 @@ class StringWithScoreOutputHandler(OutputHandler):
         self.stream.write("{:.3f}\t{}\n".format(t_output.score, t_output.translation))
         self.stream.flush()
 
+class AlignmentsOutputHandler(StringOutputHandler):
+    """
+    Output handler to write hard alignments to a stream.
+    Alignments are written in the format:
+    S SOURCE_POS TARGET_POS
+
+    :param stream: Stream to write translations and alignments to.
+    """
+
+    def __init__(self, stream) -> None:
+        super().__init__(stream)
+
+    def handle(self,
+               t_input: inference.TranslatorInput,
+               t_output: inference.TranslatorOutput,
+               t_walltime: float = 0.):
+        """
+        :param t_input: Translator input.
+        :param t_output: Translator output.
+        :param t_walltime: Total wall-clock time for translation.
+        """
+        alignments = " ".join(
+            ["S %d %d" % (j, i) if j > -1 else "" for i, j in enumerate(t_output.alignment[1:])])
+        self.stream.write("%s\n" % (alignments.strip()))
+        self.stream.flush()
 
 class StringWithAlignmentsOutputHandler(StringOutputHandler):
     """

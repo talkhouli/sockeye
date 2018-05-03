@@ -63,7 +63,9 @@ class Decoder(ABC):
                         target_embed: mx.sym.Symbol,
                         target_embed_lengths: mx.sym.Symbol,
                         target_embed_max_length: int,
-                        alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
+                        alignment: mx.sym.Symbol = None,
+                        last_alignment: mx.sym.Symbol = None,
+                        output_embed: mx.sym.Symbol = None) -> mx.sym.Symbol:
         """
         Decodes a sequence of embedded target words and returns sequence of last decoder
         representations for each time step.
@@ -74,6 +76,9 @@ class Decoder(ABC):
         :param target_embed: Embedded target sequence. Shape: (batch_size, target_embed_max_length, target_num_embed).
         :param target_embed_lengths: Lengths of embedded target sequences. Shape: (batch_size,).
         :param target_embed_max_length: Dimension of the embedded target sequence.
+        :param alignment: alignments. Shape: (batch_size,target_embed_max_length)
+        :param last_alignment: alignments with unaligned positions replaced by last aligned positions. Shape: (batch_size,target_embed_max_length)
+        :param output_embed: output labels embeddings. Shape: (batch_size,target_embed_max_length,output_num_embed)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
         pass
@@ -84,7 +89,9 @@ class Decoder(ABC):
                     target_embed_prev: mx.sym.Symbol,
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
-                    alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    alignment: mx.sym.Symbol = None,
+                    last_alignment: mx.sym.Symbol = None,
+                    output_embed_prev: mx.sym.Symbol) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -96,6 +103,8 @@ class Decoder(ABC):
         :param source_encoded_max_length: Length of encoded source time dimension.
         :param states: Arbitrary list of decoder states.
         :param alignment: alignment source positions.  Shape (batch_size,)
+        :param last_alignment: last aligned source positions.  Shape (batch_size,)
+        :param output_embed_prev: previous output label embeddings  Shape (batch_size, output_num_embed)
         :return: logit inputs, attention probabilities, next decoder states.
         """
         pass
@@ -222,7 +231,8 @@ class TransformerDecoder(Decoder):
                         target_embed: mx.sym.Symbol,
                         target_embed_lengths: mx.sym.Symbol,
                         target_embed_max_length: int,
-                        alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
+                        alignment: mx.sym.Symbol = None,
+                        last_alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
         """
         Decodes a sequence of embedded target words and returns sequence of last decoder
         representations for each time step.
@@ -233,7 +243,7 @@ class TransformerDecoder(Decoder):
         :param target_embed: Embedded target sequence. Shape: (batch_size, target_embed_max_length, target_num_embed).
         :param target_embed_lengths: Lengths of embedded target sequences. Shape: (batch_size,).
         :param target_embed_max_length: Dimension of the embedded target sequence.
-        :param alignment source positions.  Shape (batch_size,)
+        :param alignment source positions.  Shape (batch_size,target_embed_max_length)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
         # (batch_size, source_max_length, num_source_embed)
@@ -278,7 +288,8 @@ class TransformerDecoder(Decoder):
                     target_embed_prev: mx.sym.Symbol,
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
-                    alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    alignment: mx.sym.Symbol = None,
+                    last_alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -290,6 +301,7 @@ class TransformerDecoder(Decoder):
         :param source_encoded_max_length: Length of encoded source time dimension.
         :param states: Arbitrary list of decoder states.
         :param alignment: alignment source positions.  Shape (batch_size,)
+        :param last alignment: last aligned source positions.  Shape (batch_size,)
         :return: logit inputs, attention probabilities, next decoder states.
         """
         # for step > 1, states contains source_encoded, source_encoded_lengths, and a cache tensor
@@ -475,7 +487,11 @@ class RecurrentDecoderConfig(Config):
                  context_gating: bool = False,
                  layer_normalization: bool = False,
                  attention_in_upper_layers: bool = False,
-                 alignment_model: bool = False) -> None:
+                 alignment_model: bool = False,
+                 concat_previous_pre_output: bool = False,
+                 positional_embedding_type: str = C.NO_POSITIONAL_EMBEDDING,
+                 max_seq_len_target: int = 0,
+                 label_num_layers: int = 0) -> None:
         super().__init__()
         self.max_seq_len_source = max_seq_len_source
         self.rnn_config = rnn_config
@@ -486,6 +502,10 @@ class RecurrentDecoderConfig(Config):
         self.layer_normalization = layer_normalization
         self.attention_in_upper_layers = attention_in_upper_layers
         self.alignment_model = alignment_model
+        self.concat_previous_pre_output = concat_previous_pre_output
+        self.positional_embedding_type = positional_embedding_type
+        self.max_seq_len_target = max_seq_len_target
+        self.label_num_layers = label_num_layers
 
 
 class RecurrentDecoder(Decoder):
@@ -526,12 +546,22 @@ class RecurrentDecoder(Decoder):
         if self.rnn_config.num_layers == 1 or not self.config.attention_in_upper_layers:
             self.rnn_pre_attention = rnn.get_stacked_rnn(self.rnn_config, self.prefix, parallel_inputs=False)
             self.rnn_post_attention = None
+            self.rnn_post_attention_n_states = len(self.rnn_pre_attention.state_shape)
         else:
             self.rnn_pre_attention = rnn.get_stacked_rnn(self.rnn_config, self.prefix, parallel_inputs=False,
                                                          layers=[0])
             self.rnn_post_attention = rnn.get_stacked_rnn(self.rnn_config, self.prefix, parallel_inputs=True,
                                                           layers=range(1, self.rnn_config.num_layers))
+            self.rnn_post_attention_n_states = len(self.rnn_pre_attention.state_shape) + \
+                                                    len(self.rnn_post_attention.state_shape)
         self.rnn_pre_attention_n_states = len(self.rnn_pre_attention.state_shape)
+
+        self.rnn_label_layers = None
+        if self.config.label_num_layers > 0:
+            self.rnn_label_layers = rnn.get_stacked_rnn(self.rnn_config, self.prefix, parallel_inputs=False,
+                                                          layers=range(self.rnn_config.num_layers,
+                                                                       self.rnn_config.num_layers +
+                                                                        self.config.label_num_layers))
 
         if self.config.state_init != C.RNN_DEC_INIT_ZERO:
             self._create_state_init_parameters()
@@ -543,6 +573,17 @@ class RecurrentDecoder(Decoder):
                                                      prefix="%shidden_norm" % prefix) \
             if self.config.layer_normalization else None
 
+        #positional embeddings
+        self.context_pos_embedding = encoder.get_positional_embedding(config.positional_embedding_type,
+                                                                      self.num_hidden,
+                                                                      max_seq_len=config.max_seq_len_target,
+                                                                      fixed_pos_embed_scale_up_input=True,
+                                                                      fixed_pos_embed_scale_down_positions=False,
+                                                                      prefix=C.TARGET_POSITIONAL_EMBEDDING_PREFIX) \
+            if config.positional_embedding_type is not C.NO_POSITIONAL_EMBEDDING else None
+
+        self.debug_output_embed_slice = []
+
     def _create_state_init_parameters(self):
         """
         Creates parameters for encoder last state transformation into decoder layer initial states.
@@ -552,6 +593,8 @@ class RecurrentDecoder(Decoder):
         state_shapes = list(self.rnn_pre_attention.state_shape)
         if self.rnn_post_attention:
             state_shapes += self.rnn_post_attention.state_shape
+        if self.rnn_label_layers:
+            state_shapes += self.rnn_label_layers.state_shape
         for state_idx, (_, init_num_hidden) in enumerate(state_shapes):
             self.init_ws.append(mx.sym.Variable("%senc2decinit_%d_weight" % (self.prefix, state_idx)))
             self.init_bs.append(mx.sym.Variable("%senc2decinit_%d_bias" % (self.prefix, state_idx)))
@@ -567,7 +610,9 @@ class RecurrentDecoder(Decoder):
                         target_embed: mx.sym.Symbol,
                         target_embed_lengths: mx.sym.Symbol,
                         target_embed_max_length: int,
-                        alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
+                        alignment: mx.sym.Symbol = None,
+                        last_alignment: mx.sym.Symbol = None,
+                        output_embed: mx.sym.Symbol = None) -> mx.sym.Symbol:
         """
         Decodes a sequence of embedded target words and returns sequence of last decoder
         representations for each time step.
@@ -579,6 +624,9 @@ class RecurrentDecoder(Decoder):
         :param target_embed_lengths: Lengths of embedded target sequences. Shape: (batch_size,).
         :param target_embed_max_length: Dimension of the embedded target sequence.
         :param alignment: alignment source position for each target position.  Shape (batch_size,target_embed_max_length)
+        :param last_alignment: alignment source position for each target position, unaligned positions copy values of last aligned
+                            positions. Shape (batch_size,target_embed_max_length)
+        :param output_embed: output labels embeddings. Shape: (batch_size,target_embed_max_length,output_num_embed)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
         # target_embed: target_seq_len * (batch_size, num_target_embed)
@@ -600,16 +648,44 @@ class RecurrentDecoder(Decoder):
         # TODO: possible alternative: feed back the context vector instead of the hidden (see lamtram)
         self.reset()
         self.debug_alignment = alignment
+        self.debug_last_alignment = last_alignment
         self.debug_attention = []
+
         for seq_idx in range(target_embed_max_length):
-            alignment_slice = mx.sym.slice_axis(alignment,axis=1,begin=seq_idx,end=seq_idx+1,name="%salignment_slice%d" % (self.prefix, seq_idx)) if alignment is not None else None
+            alignment_slice = mx.sym.slice_axis(alignment,axis=1,begin=seq_idx,
+                                                end=seq_idx+1,
+                                                name="%salignment_slice%d" % (self.prefix, seq_idx)) \
+                                    if alignment is not None else None
+            last_alignment_slice = mx.sym.slice_axis(last_alignment,
+                                                     axis=1,
+                                                     begin=seq_idx,
+                                                     end=seq_idx+1,
+                                                     name="%slast_alignment_slice%d" % (self.prefix, seq_idx))\
+                                    if last_alignment is not None else None
+
+            #labels of previous step
+            if output_embed is not None and seq_idx > 0:
+                output_embed_slice  = mx.sym.slice_axis(output_embed,
+                                                     axis=1,
+                                                     begin=seq_idx-1,
+                                                     end=seq_idx,
+                                                     name="%slabel_slice%d" % (self.prefix, seq_idx))
+            else:
+                output_embed_slice = mx.sym.zeros_like(mx.sym.slice_axis(output_embed,
+                                                     axis=1,
+                                                     begin=seq_idx,
+                                                     end=seq_idx+1,
+                                                     name="%slabel_slice%d" % (self.prefix, seq_idx)))
+
             # hidden: (batch_size, rnn_num_hidden)
             state, attention_state = self._step(target_embed[seq_idx],
                                                 state,
                                                 attention_func,
                                                 attention_state,
                                                 seq_idx,
-                                                alignment_slice)
+                                                alignment_slice,
+                                                last_alignment_slice,
+                                                output_embed_slice)
             self.debug_attention.append(attention_state.context)
 
             # hidden_expanded: (batch_size, 1, rnn_num_hidden)
@@ -625,7 +701,9 @@ class RecurrentDecoder(Decoder):
                     target_embed_prev: mx.sym.Symbol,
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
-                    alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    alignment: mx.sym.Symbol = None,
+                    last_alignment: mx.sym.Symbol = None,
+                    output_embed_prev: mx.sym.Symbol) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -637,10 +715,12 @@ class RecurrentDecoder(Decoder):
         :param source_encoded_max_length: Length of encoded source time dimension.
         :param states: Arbitrary list of decoder states.
         :param alignment: alignment source positions.  Shape (batch_size,)
+        :param last_alignment: last aligned source positions.  Shape (batch_size,)
+        :param output_embed_prev: previous output label embeddings  Shape (batch_size, output_num_embed)
         :return: logit inputs, attention probabilities, next decoder states.
         """
         prev_hidden = None
-        if self.config.alignment_model:
+        if self.config.alignment_model and not self.config.concat_previous_pre_output:
             source_encoded, prev_dynamic_source, source_encoded_length, *layer_states = states
         else:
             source_encoded, prev_dynamic_source, source_encoded_length, prev_hidden, *layer_states = states
@@ -658,12 +738,14 @@ class RecurrentDecoder(Decoder):
                                             prev_state,
                                             attention_func,
                                             prev_attention_state,
-                                            alignment_slice=alignment)
+                                            alignment_slice=alignment,
+                                            last_alignment_slice=last_alignment,
+                                            output_embed_slice=output_embed_prev)
 
         new_states = [source_encoded,
                       attention_state.dynamic_source,
                       source_encoded_length] + \
-                     ([state.hidden] if not self.config.alignment_model else []) + \
+                     ([state.hidden] if not self.config.alignment_model or self.config.concat_previous_pre_output else []) + \
                      state.layer_states
 
         return state.hidden, attention_state.probs, new_states
@@ -678,6 +760,9 @@ class RecurrentDecoder(Decoder):
         if self.rnn_post_attention:
             self.rnn_post_attention.reset()
             cells_to_reset += self.rnn_post_attention._cells
+        if self.rnn_label_layers:
+            self.rnn_label_layers.reset()
+            cells_to_reset += self.rnn_label_layers._cells
         for cell in cells_to_reset:
             # TODO remove this once mxnet.rnn.ModifierCell.reset() invokes reset() of base_cell
             if isinstance(cell, mx.rnn.ModifierCell):
@@ -708,7 +793,7 @@ class RecurrentDecoder(Decoder):
         context, attention_probs, dynamic_source = self.attention.get_initial_state(source_encoded_lengths,
                                                                                     source_encoded_max_length)
         states = [source_encoded, dynamic_source, source_encoded_lengths] + \
-                 ([hidden] if not self.config.alignment_model else []) + layer_states
+                 ([hidden] if not self.config.alignment_model or self.config.concat_previous_pre_output else []) + layer_states
         return states
 
     def state_variables(self, target_max_length: int) -> List[mx.sym.Symbol]:
@@ -721,7 +806,7 @@ class RecurrentDecoder(Decoder):
         return [mx.sym.Variable(C.SOURCE_ENCODED_NAME),
                 mx.sym.Variable(C.SOURCE_DYNAMIC_PREVIOUS_NAME),
                 mx.sym.Variable(C.SOURCE_LENGTH_NAME)] + \
-               ([mx.sym.Variable(C.HIDDEN_PREVIOUS_NAME)] if not self.config.alignment_model else []) + \
+               ([mx.sym.Variable(C.HIDDEN_PREVIOUS_NAME)] if not self.config.alignment_model or self.config.concat_previous_pre_output else []) + \
                [mx.sym.Variable("%senc2decinit_%d" % (self.prefix, i)) for i in
                 range(len(sum([rnn.state_info for rnn in self.get_rnn_cells()], [])))]
 
@@ -751,7 +836,7 @@ class RecurrentDecoder(Decoder):
                                layout="N")] + \
                ([mx.io.DataDesc(C.HIDDEN_PREVIOUS_NAME,
                                 (batch_size, self.num_hidden),
-                                layout="NC")] if not self.config.alignment_model else []) + \
+                                layout="NC")] if not self.config.alignment_model or self.config.concat_previous_pre_output else []) + \
                [mx.io.DataDesc("%senc2decinit_%d" % (self.prefix, i),
                                (batch_size, num_hidden),
                                layout=C.BATCH_MAJOR) for i, (_, num_hidden) in enumerate(
@@ -765,6 +850,8 @@ class RecurrentDecoder(Decoder):
         cells = [self.rnn_pre_attention]
         if self.rnn_post_attention:
             cells.append(self.rnn_post_attention)
+        if self.rnn_label_layers:
+            cells.append(self.rnn_label_layers)
         return cells
 
     def get_initial_state(self,
@@ -829,7 +916,9 @@ class RecurrentDecoder(Decoder):
               attention_func: Callable,
               attention_state: rnn_attention.AttentionState,
               seq_idx: int = 0,
-              alignment_slice: mx.sym.symbol = None) -> Tuple[RecurrentDecoderState, rnn_attention.AttentionState]:
+              alignment_slice: mx.sym.symbol = None,
+              last_alignment_slice: mx.sym.symbol = None,
+              output_embed_slice: mx.sym.symbol = None) -> Tuple[RecurrentDecoderState, rnn_attention.AttentionState]:
 
         """
         Performs single-time step in the RNN, given previous word vector, previous hidden state, attention function,
@@ -840,6 +929,9 @@ class RecurrentDecoder(Decoder):
         :param attention_func: Attention function to produce context vector.
         :param attention_state: Previous attention state.
         :param seq_idx: Decoder time step.
+        :param alignment_slice alignment positions per step. Shape (batch_size,1)
+        :param last_alignment_slice alignment positions per step, unaligned mapped to last aligned positions. Shape (batch_size,1)
+        :param output_embed_slice output label embeddings of preivous step. Shape (batch_size,1,output_num_embed)
         :return: (new decoder state, updated attention state).
         """
         # (1) RNN step
@@ -855,17 +947,41 @@ class RecurrentDecoder(Decoder):
 
         # (2) Attention step
         attention_input = self.attention.make_input(seq_idx, word_vec_prev, rnn_pre_attention_output)
-        attention_state = attention_func(attention_input, attention_state, alignment_slice)
+        attention_state = attention_func(attention_input, attention_state, alignment_slice,
+                                         last_alignment_slice)
+
+        context = attention_state.context
+        if self.context_pos_embedding:
+            context = self.context_pos_embedding.encode_positions(mx.sym.reshape(data=alignment_slice,
+                                                                                 shape=(0,)),
+                                                                  context)
+        self.debug_output_embed_slice = [output_embed_slice] if output_embed_slice is not None else []
+        if self.rnn_label_layers:
+            label_rnn_output, label_rnn_states = \
+                self.rnn_label_layers(mx.sym.reshape(output_embed_slice,shape=(0,-3)),
+                                      state.layer_states[self.rnn_post_attention_n_states:])
+        else:
+            label_rnn_states = []
+
 
         # (3) Attention handling (and possibly context gating)
         if self.rnn_post_attention:
             upper_rnn_output, upper_rnn_layer_states = \
-                self.rnn_post_attention(rnn_pre_attention_output, attention_state.context,
-                                        state.layer_states[self.rnn_pre_attention_n_states:])
+                self.rnn_post_attention(rnn_pre_attention_output, context,
+                                        state.layer_states[self.rnn_pre_attention_n_states:self.rnn_post_attention_n_states])
             # do not concat if it is an alignmnet-model
-            hidden_concat = mx.sym.concat(upper_rnn_output, attention_state.context,
+            hidden_concat = mx.sym.concat(upper_rnn_output, context,
                                           dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx)) \
                 if not self.config.alignment_model else upper_rnn_output  # TODO (Tamer) decide on whether it is best to include concat
+
+            if self.rnn_label_layers:
+                hidden_concat = mx.sym.concat(hidden_concat, label_rnn_output,
+                                              dim=1, name='%slabel_hidden_concat_t%d' % (self.prefix, seq_idx))
+
+            if self.config.concat_previous_pre_output:
+                hidden_concat = mx.sym.concat(hidden_concat, state.hidden,
+                                              dim=1, name='%shidden_concat_pre_output_t%d' % (self.prefix, seq_idx))
+
             if self.config.hidden_dropout > 0:
                 hidden_concat = mx.sym.Dropout(data=hidden_concat, p=self.config.hidden_dropout,
                                                name='%shidden_concat_dropout_t%d' % (self.prefix, seq_idx))
@@ -874,19 +990,26 @@ class RecurrentDecoder(Decoder):
         else:
             upper_rnn_layer_states = []
             # do not concat if it is an alignmnet-model
-            hidden_concat = mx.sym.concat(rnn_pre_attention_output, attention_state.context,
+            hidden_concat = mx.sym.concat(rnn_pre_attention_output, context,
                                           dim=1, name='%shidden_concat_t%d' % (self.prefix, seq_idx))  # \
             # if not self.config.alignment_model else attention_state.context  #
+
+            if self.rnn_label_layers:
+                hidden_concat = mx.sym.concat(hidden_concat, label_rnn_output,
+                                              dim=1, name='%slabel_hidden_concat_t%d' % (self.prefix, seq_idx))
             if self.config.hidden_dropout > 0:
                 hidden_concat = mx.sym.Dropout(data=hidden_concat, p=self.config.hidden_dropout,
                                                name='%shidden_concat_dropout_t%d' % (self.prefix, seq_idx))
 
             if self.config.context_gating:
-                hidden = self._context_gate(hidden_concat, rnn_pre_attention_output, attention_state, seq_idx)
+                hidden_concat = self._context_gate(hidden_concat, rnn_pre_attention_output, attention_state, seq_idx)
             else:
+                if self.config.concat_previous_pre_output:
+                    hidden_concat = mx.sym.concat(hidden_concat, state.hidden,
+                                                  dim=1, name='%shidden_concat_pre_output_t%d' % (self.prefix, seq_idx))
                 hidden = self._hidden_mlp(hidden_concat, seq_idx)
 
-        return RecurrentDecoderState(hidden, rnn_pre_attention_layer_states + upper_rnn_layer_states), attention_state
+        return RecurrentDecoderState(hidden, rnn_pre_attention_layer_states + upper_rnn_layer_states + label_rnn_states), attention_state
 
     def _hidden_mlp(self, hidden_concat: mx.sym.Symbol, seq_idx: int) -> mx.sym.Symbol:
         hidden = mx.sym.FullyConnected(data=hidden_concat,
@@ -1100,7 +1223,8 @@ class ConvolutionalDecoder(Decoder):
                     target_embed_prev: mx.sym.Symbol,
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
-                    alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    alignment: mx.sym.Symbol = None,
+                    last_alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -1112,6 +1236,7 @@ class ConvolutionalDecoder(Decoder):
         :param source_encoded_max_length: Length of encoded source time dimension.
         :param states: Arbitrary list of decoder states.
         :param alignment: alignment source positions.  Shape (batch_size,)
+        :param last_alignment: last aligned source positions.  Shape (batch_size,)
         :return: logit inputs, attention probabilities, next decoder states.
         """
         # Source_encoded: (batch_size, source_encoded_max_length, encoder_depth)
