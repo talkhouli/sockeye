@@ -34,11 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 def align_idx_offset(step):
-    if step < C.MAX_JUMP:
-        lower_offset = abs(step - C.MAX_JUMP)
-    else:
-        lower_offset = 0
-    return step - C.MAX_JUMP + lower_offset
+    return max(step - 1 - C.MAX_JUMP, 0)
 
 
 class InferenceModel(model.SockeyeModel):
@@ -365,12 +361,16 @@ class InferenceModel(model.SockeyeModel):
 
         :return: Decoder stack output (logit inputs or probability distribution), attention scores, updated model state.
         """
+        #logger.info("%s" % (locals()))
+        #logger.info("offset %d" % align_idx_offset(step))
         #lexical alignment-based model: alignments hypothesized
         #alignment model: previous alignments used
         alignment_begin_idx = -1 if use_unaligned else 0
         alignment_max_length = 1
         if self.alignment_based and not self.alignment_model:
-            alignment_end_idx = min(step + C.MAX_JUMP + 1, actual_source_length)
+            alignment_end_idx = min(C.MAX_JUMP, actual_source_length - step) + min(C.MAX_JUMP, step - 1) + 1
+            if use_unaligned:
+                alignment_end_idx += 1
             #print("range (%d, %d)"%(alignment_begin_idx, alignment_end_idx))
             alignment_max_length = 2*C.MAX_JUMP + 2  #extra position for handling unaliged target words
         elif self.alignment_model:
@@ -427,7 +427,6 @@ class InferenceModel(model.SockeyeModel):
             self.decoder_module.forward(data_batch=batch, is_train=False)
             out, attention_probs, *new_states = self.decoder_module.get_outputs()
             if out_result is None:
-                #out_result = mx.ndarray.ones(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')*np.inf
                 out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)),  dtype='float32')
             if attention_probs_result is None:
                 attention_probs_result = mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(attention_probs.shape)),dtype='float32')
