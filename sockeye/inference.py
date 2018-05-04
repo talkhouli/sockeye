@@ -370,11 +370,8 @@ class InferenceModel(model.SockeyeModel):
         alignment_begin_idx = -1 if use_unaligned else 0
         alignment_max_length = 1
         if self.alignment_based and not self.alignment_model:
-            if step + C.MAX_JUMP + 1 < actual_source_length:
-                alignment_end_idx = 2*C.MAX_JUMP + 1
-            else:
-                alignment_end_idx = actual_source_length
-
+            alignment_end_idx = min(step + C.MAX_JUMP + 1, actual_source_length)
+            #print("range (%d, %d)"%(alignment_begin_idx, alignment_end_idx))
             alignment_max_length = 2*C.MAX_JUMP + 2  #extra position for handling unaliged target words
         elif self.alignment_model:
             if use_unaligned:
@@ -398,9 +395,15 @@ class InferenceModel(model.SockeyeModel):
         out_result , attention_probs_result , alignment_result, model_state_result = None, None, None, None
         new_states = [None] * len(model_state.states)
         previous_jump = [previous_jump] if previous_jump is not None else []
+        #if self.alignment_based and not self.alignment_model:
+        #    print(step, "", alignment_end_idx)
+
+        end = 0
         for align_pos in range(alignment_begin_idx,alignment_end_idx):
             align_idx = align_idx_offset(step) + align_pos if align_pos >= 0 else align_pos
             j = align_pos + 1 if use_unaligned else align_pos
+            end = j
+            #print(step, align_pos, j, align_idx)
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
@@ -424,7 +427,8 @@ class InferenceModel(model.SockeyeModel):
             self.decoder_module.forward(data_batch=batch, is_train=False)
             out, attention_probs, *new_states = self.decoder_module.get_outputs()
             if out_result is None:
-                out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')
+                #out_result = mx.ndarray.ones(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')*np.inf
+                out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)),  dtype='float32')
             if attention_probs_result is None:
                 attention_probs_result = mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(attention_probs.shape)),dtype='float32')
             out_result[j,:,:] = out
@@ -438,7 +442,7 @@ class InferenceModel(model.SockeyeModel):
             #model_state_result.append(copy.deepcopy(model_state))
             #model_state_result.append([ copy.deepcopy(e) for e in model_state.states])
 
-
+        #print("end", end, out_result)
         return out_result, attention_probs_result, ModelState(model_state_result), alignment_result
 
     @property
@@ -1446,7 +1450,7 @@ class Translator:
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_np
             offset = align_idx_offset(t)
-            best_hyp_pos_indices[:] = best_hyp_pos_indices_np - offset - (1 if self.use_unaligned else 0)
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_np + offset - (1 if self.use_unaligned else 0)
             best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
             scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
