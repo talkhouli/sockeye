@@ -1419,9 +1419,19 @@ class Translator:
                 sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
                 if reference is not None and len(reference)>0:
                     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
+                k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else  sliced_scores)-1)
+                active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
+                rest_rows = slice(sent * self.beam_size + k , (sent+1) * self.beam_size)
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
-                (best_hyp_indices_np[rows], best_hyp_pos_indices_np[rows] , best_word_indices_np[rows]), \
-                    scores_accumulated_np[rows] = utils.smallest_k(sliced_scores, self.beam_size, t == 1)
+                (best_hyp_indices_np[active_rows], best_hyp_pos_indices_np[active_rows] , best_word_indices_np[active_rows]), \
+                    scores_accumulated_np[active_rows] = utils.smallest_k(sliced_scores, k, t == 1)
+                #replicate to fill the rest of the beam in case of not enough hypotheses
+                best_hyp_indices_np[rest_rows], best_hyp_pos_indices_np[rest_rows], best_word_indices_np[rest_rows], \
+                        scores_accumulated_np[rest_rows] = best_hyp_indices_np[active_rows][0], \
+                                                           best_hyp_pos_indices_np[active_rows][0], \
+                                                           best_word_indices_np[active_rows][0], \
+                                                           scores_accumulated_np[active_rows][0]
+
                 # offsetting since the returned smallest_k() indices were slice-relative
                 best_hyp_indices_np[rows] += rows.start
                 if reference is not None and len(reference)>0:
