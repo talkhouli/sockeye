@@ -191,9 +191,9 @@ class InferenceModel(model.SockeyeModel):
             label_names = []  # type: List[str]
             return mx.sym.Group(decoder_init_states), data_names, label_names
 
-        default_bucket_key = self.max_input_length
+        default_bucket_key = self.max_input_length + (1 if self.alignment_model else 0)
         module = mx.mod.BucketingModule(sym_gen=sym_gen,
-                                        default_bucket_key=default_bucket_key,
+                                        default_bucket_key=default_bucket_key ,
                                         context=self.context)
         return module, default_bucket_key
 
@@ -360,9 +360,10 @@ class InferenceModel(model.SockeyeModel):
         #alignment model: previous alignments used
         alignment_begin_idx = -1 if use_unaligned else 0
         alignment_max_length = 1
+        new_bucket_key = (bucket_key[0] + (1 if self.alignment_model else 0),bucket_key[1])
         if self.alignment_based and not self.alignment_model:
             alignment_end_idx = max(actual_source_length)
-            alignment_max_length = bucket_key[0] + 1 #extra position for handling unaliged target words
+            alignment_max_length = new_bucket_key[0] + 1 #extra position for handling unaliged target words
         elif self.alignment_model:
             if use_unaligned:
                 alignment_end_idx = 0
@@ -377,7 +378,7 @@ class InferenceModel(model.SockeyeModel):
         #extra position for handling unaliged target words
         #alignment_max_length = bucket_key[0]+1 if self.alignment_based and not self.alignment_model else 1
         alignment_shape = None
-        for e in self._get_decoder_data_shapes(bucket_key):
+        for e in self._get_decoder_data_shapes(new_bucket_key):
             if e[0] == C.ALIGNMENT_NAME:
                 alignment_shape = e[1]
                 break
@@ -406,8 +407,8 @@ class InferenceModel(model.SockeyeModel):
             batch = mx.io.DataBatch(
                 data=[prev_word.as_in_context(self.context)] + model_state.states + alignment + previous_jump,
                 label=None,
-                bucket_key=bucket_key,
-                provide_data=self._get_decoder_data_shapes(bucket_key))
+                bucket_key=new_bucket_key,
+                provide_data=self._get_decoder_data_shapes(new_bucket_key))
             self.decoder_module.forward(data_batch=batch, is_train=False)
             out, attention_probs, *new_states = self.decoder_module.get_outputs()
             if out_result is None:
@@ -1049,10 +1050,16 @@ class Translator:
         :return: List of ModelStates.
         """
         #add bos and remove last element to keep the length
-        bos_sources = mx.ndarray.concat(mx.ndarray.array([[self.vocab_source[C.BOS_SYMBOL]]] *self.batch_size,
+        #bos_sources = mx.ndarray.concat(mx.ndarray.array([[self.vocab_source[C.BOS_SYMBOL]]] *self.batch_size,
+        #                                                 ctx=sources.context)
+        #                                , sources[:,:sources.shape[1]-1], dim=1)
+        bos_sources = mx.ndarray.concat(mx.ndarray.array([[self.vocab_source[C.BOS_SYMBOL]]] * self.batch_size,
                                                          ctx=sources.context)
-                                        , sources[:,:sources.shape[1]-1], dim=1)
-        return [model.run_encoder( bos_sources if model.alignment_model else sources, source_length ) for model in self.models]
+                                        , sources[:, :sources.shape[1]], dim=1)
+        return [model.run_encoder( bos_sources
+                                           if model.alignment_model
+                                           else sources,
+                                   source_length + (1 if model.alignment_model else 0)) for model in self.models]
 
     def _decode_step(self,
                      sequences: mx.nd.NDArray,
@@ -1448,6 +1455,7 @@ class Translator:
             best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
             best_word_indices[:] = best_word_indices_np
             scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
+            print(scores_accumulated.asnumpy())
             # Map from restricted to full vocab ids if needed
             if self.restrict_lexicon:
                 best_word_indices[:] = vocab_slice_ids.take(best_word_indices)
