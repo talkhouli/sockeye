@@ -414,7 +414,10 @@ class InferenceModel(model.SockeyeModel):
                 out_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(out.shape)), dtype='float32')
             if attention_probs_result is None:
                 attention_probs_result = mx.ndarray.zeros(ctx=self.context,shape=(alignment_max_length,*(attention_probs.shape)),dtype='float32')
-            out_result[j,:,:] = out
+            for sent in range(len(actual_source_length)):
+                #if batch_size >1 , additional positions might have been computed and need to be disregarded
+                if j< actual_source_length[sent]:
+                    out_result[j,sent*self.beam_size:(sent+1)*self.beam_size,:] = out[sent*self.beam_size:(sent+1)*self.beam_size]
             attention_probs_result[j,:,:] = attention_probs
             #out_result.append(copy.deepcopy(out))
             #attention_probs_result.append(copy.deepcopy(attention_probs))
@@ -983,10 +986,12 @@ class Translator:
         attention_matrix = translation.attention_matrix[1:, :]
 
         target_tokens = [self.vocab_target_inv[target_id] for target_id in target_ids]
+
         if np.max(translation.alignment) > -1:
             target_tokens = [token + '_' + translation.source[translation.alignment[i+1]]
-                             if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL)  else token
-                             for i, token in enumerate(target_tokens)]
+                             if (translation.alignment[i+1]<len(translation.source) and
+                                 (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL)) else token
+                             for i, token in enumerate(target_tokens[:-1])] + [target_tokens[-1]]
         else:
             target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
                                 if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
@@ -1174,7 +1179,7 @@ class Translator:
             for sent in range(len(actual_soruce_length)):
                 if new_alignment[j][0] != actual_soruce_length[sent] -1 and \
                         new_alignment[j][0] != C.UNALIGNED_SOURCE_INDEX:
-                    combined_result[j,sent,self.vocab_target[C.EOS_SYMBOL]] = np.inf
+                    combined_result[j,sent*self.beam_size:(sent+1)*self.beam_size,self.vocab_target[C.EOS_SYMBOL]] = np.inf
 
         return combined_result
 
