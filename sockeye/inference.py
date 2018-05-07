@@ -1224,7 +1224,7 @@ class Translator:
                                                          dtype='int32') * new_alignment,
                                          keepdims=True)
         coverage_violation = coverage_slice + 1> C.MAX_COVERAGE
-        ret = mx.nd.where((jump > max_jump) + (jump < -max_jump) + coverage_violation > 0,
+        ret = mx.nd.where(coverage_violation > 0,
                           mx.nd.ones(ctx=self.context,shape=(self.beam_size*self.batch_size,1)),
                           mx.nd.zeros(ctx=self.context,shape=(self.beam_size*self.batch_size,1)))
         return ret
