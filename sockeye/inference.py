@@ -87,8 +87,9 @@ class InferenceModel(model.SockeyeModel):
         self.batch_size = batch_size
         self.context = context
         self.alignment_based= self.config.config_data.alignment is not None
-        self.use_unaligned = self.config.config_decoder.attention_config.uniform_unaligned_context or \
-                                self.config.config_decoder.attention_config.last_aligned_context
+        self.use_unaligned = hasattr(self.config.config_decoder, "attention_config")\
+                                and (self.config.config_decoder.attention_config.uniform_unaligned_context or \
+                                self.config.config_decoder.attention_config.last_aligned_context)
         self.alignment_model = self.config.output_classes == C.ALIGNMENT_JUMP
         self._build_model_components()
 
