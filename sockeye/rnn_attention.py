@@ -1192,7 +1192,7 @@ class Alignment(Attention):
 
     def __init__(self,input_previous_word: bool,
                  uniform_unaligned_context: bool,
-                 last_aligned_context: bool) -> None:
+                 last_aligned_context: bool = False) -> None:
         super().__init__(input_previous_word=input_previous_word)
         self.uniform_unaligned_context = uniform_unaligned_context
         self.last_aligned_context = last_aligned_context
