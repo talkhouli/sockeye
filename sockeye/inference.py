@@ -1452,7 +1452,12 @@ class Translator:
             scores = scores.asnumpy()  # convert to numpy once to minimize cross-device copying
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
-                sliced_scores = scores if t == 1 and self.batch_size == 1 else scores[rows]
+                active_positions = slice(0, min(
+                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                    max(actual_source_length)
+                ))
+
+                sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
                 if reference is not None and len(reference)>0:
                     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
                 k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else  sliced_scores)-1)
