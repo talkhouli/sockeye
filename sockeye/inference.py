@@ -933,7 +933,8 @@ class Translator:
             if rest > 0:
                 logger.debug("Extending the last batch to the full batch size (%d)", self.batch_size)
                 batch = batch + [batch[0]] * rest
-                reference_batch = reference_batch + [reference_batch[0]] * rest
+                if len(ref_chunks) > 0 and ref_chunks[0] is not None:
+                    reference_batch = reference_batch + [reference_batch[0]] * rest
             batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
             # truncate to remove filler translations
             if rest > 0:
