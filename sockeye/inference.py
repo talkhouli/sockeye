@@ -375,7 +375,8 @@ class InferenceModel(model.SockeyeModel):
             if use_unaligned:
                 alignment_end_idx += 1
             #print("range (%d, %d)"%(alignment_begin_idx, alignment_end_idx))
-            alignment_max_length = 2*C.MAX_JUMP + 2  #extra position for handling unaliged target words
+            #alignment_max_length = 2*C.MAX_JUMP + 2  #extra position for handling unaliged target words
+            alignment_max_length = alignment_end_idx
         elif self.alignment_model:
             if use_unaligned:
                 alignment_end_idx = 0
@@ -1445,7 +1446,11 @@ class Translator:
                 # this is equivalent to doing this in numpy:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
-                scores = mx.nd.where(finished, pad_dist, scores)
+                active_positions = slice(0, min(
+                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                    max(actual_source_length)
+                ))
+                scores = mx.nd.where(finished, pad_dist[:, active_positions, :], scores)
 
             # (3) get beam_size winning hypotheses for each sentence block separately
             # TODO(fhieber): once mx.nd.topk is sped-up no numpy conversion necessary anymore.
