@@ -356,7 +356,8 @@ class InferenceModel(model.SockeyeModel):
                     last_alignment: mx.nd.NDArray = None,
                     previous_jump: mx.nd.NDArray = None,
                     actual_source_length: List[int] = [],
-                    use_unaligned: bool = True) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
+                    use_unaligned: bool = True,
+                    skip_alignments: List[bool] = []) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
         Runs forward pass of the single-step decoder.
 
@@ -408,6 +409,7 @@ class InferenceModel(model.SockeyeModel):
             j = align_pos + 1 if use_unaligned else align_pos
             end = j
             #print(step, align_pos, j, align_idx)
+
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
@@ -418,6 +420,11 @@ class InferenceModel(model.SockeyeModel):
                         alignment = [prev_alignment + 1]
                 else:
                     #hypothesize alignment
+
+                    if len(skip_alignments) > align_idx and skip_alignments[align_idx]:
+                        # logger.info("skip alignment point %d" % align_idx)
+                        continue
+
                     alignment = [align_idx*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
                     if alignment_result is None:
                         alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
@@ -1133,10 +1140,12 @@ class Translator:
         # alignment models
         has_align_model = False
         align_model_probs, align_model_states = [], []
+        num_align_models = 0
         for model_idx, (model, state) in enumerate(itertools.zip_longest(self.models, states)):
             # alignment models evaluated elsewhere
             if not model.alignment_model:
                 continue
+            num_align_models += 1
             has_align_model = True
             probs, _, state, _ = model.run_decoder(prev_word=prev_word,
                                                    bucket_key=bucket_key,
@@ -1150,6 +1159,21 @@ class Translator:
             align_model_probs.append(probs)
             model_states[model_idx] = state
 
+        skip_threshold = 0.01
+        if skip_threshold > 0:
+            utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
+            skip_jumps = mx.nd.zeros((self.batch_size*self.beam_size,bucket_key[0]))
+            start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+            end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+            for idx in range(self.batch_size*self.beam_size):
+                sel = slice(start[idx].asscalar(), end[idx].asscalar())
+                skip_jumps[idx] = align_model_probs[0][0, idx, sel]
+
+            skip_alignments = np.all((skip_jumps < skip_threshold).asnumpy(), axis=0)
+
+        else:
+            skip_alignments = []
+
         # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
         #lexical models
         for model_idx, (model, out_w, out_b, state) in enumerate(itertools.zip_longest(
@@ -1161,7 +1185,8 @@ class Translator:
                                                                                        state,
                                                                                        step=step,
                                                                                        actual_source_length=actual_soruce_length,
-                                                                                       use_unaligned=self.use_unaligned)
+                                                                                       use_unaligned=self.use_unaligned,
+                                                                                       skip_alignments=skip_alignments)
             # Compute logits and softmax with restricted vocabulary
             if self.restrict_lexicon:
                 logits = model.output_layer(decoder_outputs, out_w, out_b)
