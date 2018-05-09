@@ -1167,11 +1167,12 @@ class Translator:
             utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
             skip_jumps = mx.nd.zeros((self.batch_size*self.beam_size,bucket_key[0]))
             upper_bound = min(bucket_key[0], C.NUM_ALIGNMENT_JUMPS)
-            start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, upper_bound).reshape((-1,))
-            end = mx.nd.clip(start + bucket_key[0], 0, upper_bound).reshape((-1,))
+            start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+            end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
             for idx in range(self.batch_size*self.beam_size):
-                sel = slice(start[idx].asscalar(), end[idx].asscalar())
-                skip_jumps[idx, sel] = align_model_probs[0][0, idx, sel]
+                source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
+                target_sel = slice(0, source_sel.stop - source_sel.start)
+                skip_jumps[idx,target_sel] = align_model_probs[0][0, idx, source_sel]
 
             skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
 
