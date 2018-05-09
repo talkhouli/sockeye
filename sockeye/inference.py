@@ -1127,11 +1127,33 @@ class Translator:
         bucket_key = (source_length, step)
         prev_word = sequences[:, step - 1]
 
-        model_probs, model_attention_probs, model_states = [], [], []
+
+        model_probs, model_attention_probs, model_states = [], [], [None]*len(self.models)
+
+        # alignment models
+        has_align_model = False
+        align_model_probs, align_model_states = [], []
+        for model_idx, (model, state) in enumerate(itertools.zip_longest(self.models, states)):
+            # alignment models evaluated elsewhere
+            if not model.alignment_model:
+                continue
+            has_align_model = True
+            probs, _, state, _ = model.run_decoder(prev_word=prev_word,
+                                                   bucket_key=bucket_key,
+                                                   model_state=state,
+                                                   prev_alignment=prev_alignment,
+                                                   step=step,
+                                                   last_alignment=last_alignment,
+                                                   previous_jump=previous_jump,
+                                                   actual_source_length=actual_soruce_length,
+                                                   use_unaligned=self.use_unaligned)
+            align_model_probs.append(probs)
+            model_states[model_idx] = state
+
         # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
         #lexical models
-        for model, out_w, out_b, state in itertools.zip_longest(
-                self.models, models_output_layer_w, models_output_layer_b, states):
+        for model_idx, (model, out_w, out_b, state) in enumerate(itertools.zip_longest(
+                self.models, models_output_layer_w, models_output_layer_b, states)):
             #alignment models evaluated later
             if model.alignment_model:
                 continue
@@ -1149,29 +1171,9 @@ class Translator:
                 probs = decoder_outputs
             model_probs.append(probs)
             model_attention_probs.append(attention_probs)
-            model_states.append(state)
+            model_states[model_idx] = state
 
         neg_logprobs , attention_probs = self._combine_predictions_per_position(model_probs,model_attention_probs)
-
-        #alignment models
-        has_align_model = False
-        align_model_probs , align_model_states= [] , []
-        for model, state in itertools.zip_longest(self.models, states):
-            # alignment models evaluated elsewhere
-            if not model.alignment_model:
-                continue
-            has_align_model = True
-            probs, _, state, _ = model.run_decoder(prev_word=prev_word,
-                                                   bucket_key=bucket_key,
-                                                   model_state=state,
-                                                   prev_alignment=prev_alignment,
-                                                   step=step,
-                                                   last_alignment=last_alignment,
-                                                   previous_jump=previous_jump,
-                                                   actual_source_length=actual_soruce_length,
-                                                   use_unaligned=self.use_unaligned)
-            align_model_probs.append(probs)
-            model_states.append(state)
 
         if has_align_model:
             align_neg_logprobs, _ = self._combine_predictions_per_position(align_model_probs) # Alignment mo
@@ -1473,7 +1475,6 @@ class Translator:
                     min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
                     max(actual_source_length)
                 ))
-
                 sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
                 if reference is not None and len(reference)>0:
                     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
