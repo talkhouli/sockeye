@@ -371,7 +371,7 @@ class InferenceModel(model.SockeyeModel):
         new_bucket_key = (bucket_key[0] + (1 if self.alignment_model else 0),bucket_key[1])
         if self.alignment_based and not self.alignment_model:
             # TODO correct usage of max(actual_source_length)
-            alignment_end_idx = min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1) + 1
+            alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
             if use_unaligned:
                 alignment_end_idx += 1
             #print("range (%d, %d)"%(alignment_begin_idx, alignment_end_idx))
@@ -895,6 +895,15 @@ class Translator:
         input_chunks = [] # type: List[InputChunk]
         reference_chunks = []  # type: List[ReferenceChunk]
         for input_idx, trans_input in enumerate(trans_inputs):
+
+            if len(trans_input.tokens) > 0 and trans_input.reference_tokens:
+                if len(trans_input.reference_tokens) - len(trans_input.tokens) >= C.MAX_JUMP:
+                    logger.warning(
+                        "Reference %d has length (%d) that cant be aligned with input length (%d). "
+                        "Removing sentence from corpus",
+                        trans_input.id, len(trans_input.reference_tokens), len(trans_input.tokens))
+                    continue
+
             if len(trans_input.tokens) == 0:
                 empty_translation = Translation(target_ids=[],
                                                 attention_matrix=np.asarray([[0]]),
@@ -1448,7 +1457,7 @@ class Translator:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
                 active_positions = slice(0, min(
-                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                    max(0, min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1)) + 1,
                     max(actual_source_length)
                 ))
                 scores = mx.nd.where(finished, pad_dist[:, active_positions, :], scores)
