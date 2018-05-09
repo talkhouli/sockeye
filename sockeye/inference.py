@@ -816,7 +816,8 @@ class Translator:
                  vocab_target: Dict[str, int],
                  restrict_lexicon: Optional[lexicon.TopKLexicon] = None,
                  lex_weight: float = 1.,
-                 align_weight: float = 0.
+                 align_weight: float = 0.,
+                 align_skip_threshold: float = 0.
                  ) -> None:
         self.context = context
         self.length_penalty = length_penalty
@@ -833,6 +834,7 @@ class Translator:
         self.batch_size = self.models[0].batch_size
         self.lex_weight = lex_weight
         self.align_weight = align_weight
+        self.align_skip_threshold = align_skip_threshold
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -1159,8 +1161,7 @@ class Translator:
             align_model_probs.append(probs)
             model_states[model_idx] = state
 
-        skip_threshold = 0.01
-        if skip_threshold > 0:
+        if self.align_skip_threshold > 0:
             utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
             skip_jumps = mx.nd.zeros((self.batch_size*self.beam_size,bucket_key[0]))
             start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
@@ -1169,7 +1170,7 @@ class Translator:
                 sel = slice(start[idx].asscalar(), end[idx].asscalar())
                 skip_jumps[idx] = align_model_probs[0][0, idx, sel]
 
-            skip_alignments = np.all((skip_jumps < skip_threshold).asnumpy(), axis=0)
+            skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
 
         else:
             skip_alignments = []

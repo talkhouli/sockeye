@@ -1000,6 +1000,11 @@ def add_inference_args(params):
                                type=float,
                                default=0.0,
                                help='Alignment model weight for alignment-based NMT.  Default: %(default)s')
+    decode_params.add_argument('--align-threshold',
+                               type=float,
+                               default=0.0,
+                               help='Probability threshold for alignment points to be considered. 0.0 to disable. '
+                                    'Default: %(default)s')
 
 
 def add_evaluate_args(params):

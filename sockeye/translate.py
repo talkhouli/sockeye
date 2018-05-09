@@ -88,7 +88,8 @@ def main():
                                                   vocab_target,
                                           restrict_lexicon,
                                           lex_weight=args.lex_weight,
-                                          align_weight=args.align_weight
+                                          align_weight=args.align_weight,
+                                          align_skip_threshold=args.align_threshold
                                           )
         read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
