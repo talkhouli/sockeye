@@ -423,8 +423,8 @@ class InferenceModel(model.SockeyeModel):
 
                     if len(skip_alignments) > align_idx \
                             and skip_alignments[align_idx]\
-                            and not all(skip_alignments):
-                        logger.info("skip alignment point %d" % align_idx)
+                            and not np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)]):
+                        # logger.info("skip alignment point %d" % align_idx)
                         continue
 
                     alignment = [align_idx*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
