@@ -937,6 +937,9 @@ class Translator:
                 if trans_input.reference_tokens:
                     reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
 
+        if len(input_chunks) == 0:
+            logger.warning("no sentences left for translation")
+            return []
 
         # Sort longest to shortest (to rather fill batches of shorter than longer sequences)
         input_chunks,reference_chunks  = (list(t) for t in zip(*sorted(itertools.zip_longest(input_chunks,reference_chunks),
