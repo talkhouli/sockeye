@@ -1178,7 +1178,9 @@ class Translator:
                 skip_jumps[idx,target_sel] = align_model_probs[0][0, idx, source_sel]
 
             skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
-
+            num_skipped_alignments = np.sum(skip_alignments)
+            skipped_alignments_string = ", ".join([str(i) for i,x in enumerate(skip_alignments) if x ])
+            logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
         else:
             skip_alignments = []
 
