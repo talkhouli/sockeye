@@ -1180,7 +1180,13 @@ class Translator:
 
             skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
             num_skipped_alignments = np.sum(skip_alignments)
-            skipped_alignments_string = ", ".join([str(i) for i,x in enumerate(skip_alignments) if x ])
+            alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_soruce_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
+            if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)]):
+                num_skipped_alignments = 0
+                skipped_alignments_string = "all"
+            else:
+                skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
+
             logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
         else:
             skip_alignments = []
