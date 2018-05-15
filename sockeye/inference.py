@@ -423,7 +423,8 @@ class InferenceModel(model.SockeyeModel):
 
                     if len(skip_alignments) > align_idx \
                             and skip_alignments[align_idx]\
-                            and not np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)]):
+                            and not np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)])\
+                            and not align_idx == actual_source_length: # always hypothesize sentence end
                         # logger.info("skip alignment point %d" % align_idx)
                         continue
 
