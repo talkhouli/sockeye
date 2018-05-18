@@ -29,6 +29,7 @@ import lexicon
 import model
 import utils
 import vocab
+import decoder
 
 logger = logging.getLogger(__name__)
 
@@ -266,10 +267,13 @@ class InferenceModel(model.SockeyeModel):
             data_names = [C.TARGET_NAME] + state_names +\
                             ([C.LAST_ALIGNMENT_NAME
                                 if self.alignment_model
+                                    and isinstance(self.config.config_decoder,decoder.RecurrentDecoderConfig)
                                     and self.config.config_decoder.attention_config.last_aligned_context==True
                                 else C.ALIGNMENT_NAME]
                              if self.alignment_based else []) + \
                          ([C.ALIGNMENT_JUMP_LABEL_NAME] if self.alignment_model
+                                                           and isinstance(self.config.config_decoder,
+                                                                          decoder.RecurrentDecoderConfig)
                                                            and self.config.config_decoder.label_num_layers > 0
                           else [] )
 
@@ -312,6 +316,7 @@ class InferenceModel(model.SockeyeModel):
                                       self.encoder.get_num_hidden()) +
             ([mx.io.DataDesc(name=C.LAST_ALIGNMENT_NAME
                                     if self.alignment_model \
+                                        and isinstance(self.config.config_decoder, decoder.RecurrentDecoderConfig)
                                         and self.config.config_decoder.attention_config.last_aligned_context==True
                                     else C.ALIGNMENT_NAME,
                             shape=(self.batch_size * self.beam_size,1),
@@ -319,6 +324,7 @@ class InferenceModel(model.SockeyeModel):
             ([mx.io.DataDesc(name=C.ALIGNMENT_JUMP_LABEL_NAME,
                             shape=(self.batch_size * self.beam_size, 1),
                             layout="NT")] if self.alignment_model \
+                                    and isinstance(self.config.config_decoder, decoder.RecurrentDecoderConfig)
                                     and self.config.config_decoder.label_num_layers > 0 else [])
         )
 
@@ -412,7 +418,8 @@ class InferenceModel(model.SockeyeModel):
             if self.alignment_based:
                 if self.alignment_model:
                     # shift by 1 due to BOS
-                    if self.config.config_decoder.attention_config.last_aligned_context:
+                    if isinstance(self.config.config_decoder,decoder.RecurrentDecoderConfig) and \
+                            self.config.config_decoder.attention_config.last_aligned_context:
                         alignment = [last_alignment + 1]
                     else:
                         alignment = [prev_alignment + 1]
@@ -1446,15 +1453,23 @@ class Translator:
                 # this is equivalent to doing this in numpy:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
-                active_positions = slice(0, min(
-                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
-                    max(actual_source_length)
-                ))
+                if alignment_based:
+                    active_positions = slice(0, min(
+                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                        max(actual_source_length)
+                    ))
+                else:
+                    active_positions = slice(0,1)
                 scores = mx.nd.where(finished, pad_dist[:, active_positions, :], scores)
 
             # (3) get beam_size winning hypotheses for each sentence block separately
             # TODO(fhieber): once mx.nd.topk is sped-up no numpy conversion necessary anymore.
             scores = scores.asnumpy()  # convert to numpy once to minimize cross-device copying
+            #DEBUGGING
+            #score_wish = []
+            #score_wish[:] = scores[:,9,306]
+            #scores[:,9,:] = np.inf
+            #scores[:, 9, 306] = score_wish
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
                 active_positions = slice(0, min(
