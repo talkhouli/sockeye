@@ -92,6 +92,8 @@ def main():
                                           )
         translator.dictionary = read_dictionary(args.dictionary) if args.dictionary else None
         translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
+        if translator.dictionary_override_with_max_attention:
+            assert(args.batch_size==1) # batching not supported with dictionary override yet
         read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
 def read_dictionary(dictionary_file):
@@ -101,10 +103,13 @@ def read_dictionary(dictionary_file):
     :return: dict(source_word)->target_word
     '''
     with open(dictionary_file,'r') as file:
-        dictionary = dict()
+        dictionary = {}
         for line in file:
             toks = line.split()
-            dictionary[toks[0]] = toks[1]
+            seq_idx = int(toks[2])
+            if seq_idx not in dictionary:
+                dictionary[seq_idx] = dict()
+            dictionary[seq_idx][toks[0]]= toks[1]
     return dictionary
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,

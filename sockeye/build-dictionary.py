@@ -17,27 +17,30 @@ def build_dictionary(source,translation,reference,alignment):
     :param alignment: alignment reference-to-source generator
     :return: dictioanry of "source_word target_word" format
     '''
-    dictionary = {}
+    dictionary = []
     for source_seq, translation_seq, reference_seq, alignment_seq in zip(source,translation,reference,alignment):
+        dictionary_for_seq = {}
         for ref_idx,ref_word in enumerate(reference_seq):
             if ref_word not in translation_seq and \
-                            ref_word not in dictionary and \
+                            ref_word not in dictionary_for_seq and \
                             ref_word != NUM_TOKEN and \
                             source_seq[alignment_seq[ref_idx]] != NUM_TOKEN:
-                dictionary[ref_word] = source_seq[alignment_seq[ref_idx]]
+                dictionary_for_seq[ref_word] = source_seq[alignment_seq[ref_idx]]
+        dictionary.append(dictionary_for_seq)
     return dictionary
 
 
-def print(output_file: str,dictionary: dict):
+def print(output_file: str,dictionary: [dict]):
     '''
     print dictionary in format: source_word target_word
     :param output_file
-    :param dictionary: dictionary dict[target_word]=source_word
+    :param dictionary: list of dictionaries dict[seq_idx][target_word]=source_word
     :return:
     '''
     with open(output_file,'w') as file:
-        for target_word, source_word in dictionary.items():
-            file.write("%s %s\n" % (source_word,target_word))
+        for seq_idx,seq_dictionary in enumerate(dictionary):
+            for target_word, source_word in seq_dictionary.items():
+                file.write("%s %s %d\n" % (source_word,target_word,seq_idx))
 
 # def read_file(file):
 #     sequences = []

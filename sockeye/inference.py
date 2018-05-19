@@ -835,6 +835,7 @@ class Translator:
         self.align_weight = align_weight
         self.dictionary = None
         self.dictionary_override_with_max_attention = False
+        self.seq_idx = 0  #used with dictionaries, batching not supported
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -930,6 +931,7 @@ class Translator:
                                                 key=lambda args : len(args[0].tokens),
                                                 reverse=True)))
         # translate in batch-sized blocks over input chunks
+
         for batch_id, (chunks, ref_chunks) in enumerate(itertools.zip_longest(utils.grouper(input_chunks, self.batch_size),
                                                                 utils.grouper(reference_chunks, self.batch_size)
                                                                     if reference_chunks is not None else [None])):
@@ -944,6 +946,7 @@ class Translator:
                 batch = batch + [batch[0]] * rest
                 reference_batch = reference_batch + [reference_batch[0]] * rest
             batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
+            self.seq_idx += 1
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
@@ -1326,8 +1329,8 @@ class Translator:
                         #src_pos = src_pos.astype(dtype="int32").asscalar() -align_idx_offset(t) +\
                         #          (1 if self.use_unaligned else 0)
                         source_word_str = self.vocab_source_inv[int(source_word.asscalar())]
-                        if source_word_str in self.dictionary:
-                            target_word_str = self.dictionary[source_word_str]
+                        if source_word_str in self.dictionary[self.seq_idx]:
+                            target_word_str = self.dictionary[self.seq_idx][source_word_str]
                             if target_word_str in self.vocab_target:
                                 target_word = self.vocab_target[target_word_str]
                                 target_word_score = scores[beam_idx, idx, target_word]
@@ -1338,8 +1341,8 @@ class Translator:
                     src_pos = mx.nd.array([j + align_idx_offset(t) - (1 if self.use_unaligned else 0)],dtype="int32")
                     source_word = mx.nd.pick(source, src_pos).asnumpy()
                     source_word_str = self.vocab_source_inv[int(source_word)]
-                    if source_word_str in self.dictionary:
-                        target_word_str = self.dictionary[source_word_str]
+                    if source_word_str in self.dictionary[self.seq_idx]:
+                        target_word_str = self.dictionary[self.seq_idx][source_word_str]
                         if target_word_str in self.vocab_target:
                             target_word = self.vocab_target[target_word_str]
                             target_word_scores = scores[:, j, target_word]
@@ -1354,8 +1357,8 @@ class Translator:
                 max_attention_cpu.astype(dtype="int32")).asnumpy()
             for beam_idx, word in enumerate(max_attention_source_words):
                 source_word_str = self.vocab_source_inv[int(word)]
-                if source_word_str in self.dictionary:
-                    target_word_str = self.dictionary[source_word_str]
+                if source_word_str in self.dictionary[self.seq_idx]:
+                    target_word_str = self.dictionary[self.seq_idx][source_word_str]
                     if target_word_str in self.vocab_target:
                         target_word = self.vocab_target[target_word_str]
                         target_word_score = scores[beam_idx, 0, target_word]
@@ -1524,10 +1527,13 @@ class Translator:
             #scores[:, 9, 306] = score_wish
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
-                active_positions = slice(0, min(
-                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
-                    max(actual_source_length)
-                ))
+                if alignment_based:
+                    active_positions = slice(0, min(
+                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                        max(actual_source_length)
+                    ))
+                else:
+                    active_positions = slice(0, 1)
 
                 sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
                 if reference is not None and len(reference)>0:
