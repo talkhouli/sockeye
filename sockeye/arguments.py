@@ -913,6 +913,16 @@ def add_inference_args(params):
                                default=None,
                                help='Reference (target) file for forced alignment. ')
 
+    decode_params.add_argument('--dictionary', '-d',
+                               default=None,
+                               help='Word-to-word dictionary used to force-translate given words. ')
+
+    decode_params.add_argument('--dictionary-override-with-max-attention',
+                             action="store_true",
+                             default=False,
+                             help="Override using maximum attention weight. "
+                                  "Default: %(default)s.")
+
     decode_params.add_argument('--models', '-m',
                                required=True,
                                nargs='+',
