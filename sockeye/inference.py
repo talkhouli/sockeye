@@ -998,7 +998,9 @@ class Translator:
 
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
-        reference = mx.nd.zeros((len(reference_sequences), self.max_output_length)) if reference_sequences else []
+        # max reference length is longest reference in batch + 1 for EOS
+        max_reference_length = max([len(x) for x in reference_sequences]) + 1 if reference_sequences else 0
+        reference = mx.nd.zeros((len(reference_sequences), max_reference_length)) if reference_sequences else []
         source_length = []
         for j, (tokens, reference_tokens) in enumerate(itertools.zip_longest(sequences,reference_sequences)):
             ids = data_io.tokens2ids(tokens,
@@ -1377,7 +1379,8 @@ class Translator:
                                   model.encoder.get_encoded_seq_len(source_length) for model in self.models),
                               "Models must agree on encoded sequence length")
         # Maximum output length
-        max_output_length = self.models[0].get_max_output_length(source_length)
+        max_output_length = self.models[0].get_max_output_length(source_length) \
+            if reference is None or len(reference) == 0 else reference.shape[1]
 
         # General data structure: each row has batch_size * beam blocks for the 1st sentence, with a full beam,
         # then the next block for the 2nd sentence and so on
