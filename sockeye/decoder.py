@@ -280,7 +280,7 @@ class TransformerDecoder(Decoder):
                                       end=target_embed_max_length,
                                       name="%salignment_sliced" % self.prefix) if alignment is not None else None
         for layer in self.layers:
-            target = layer(target=target,
+            target, target_enc_att = layer(target=target,
                            target_bias=target_bias,
                            source=source_encoded,
                            source_bias=source_bias,

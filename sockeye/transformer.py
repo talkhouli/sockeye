@@ -99,7 +99,7 @@ class TransformerEncoderBlock:
 
     def __call__(self, data: mx.sym.Symbol, bias: mx.sym.Symbol) -> mx.sym.Symbol:
         # self-attention
-        data_self_att = self.self_attention(inputs=self.pre_self_attention(data, None),
+        data_self_att, _ = self.self_attention(inputs=self.pre_self_attention(data, None),
                                             bias=bias,
                                             cache=None)
         data = self.post_self_attention(data_self_att, data)
@@ -202,20 +202,21 @@ class TransformerDecoderBlock:
                  alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
 
         # self-attention
-        target_self_att = self.self_attention(inputs=self.pre_self_attention(target, None),
+        target_self_att, _ = self.self_attention(inputs=self.pre_self_attention(target, None),
                                               bias=target_bias,
                                               cache=cache)
         target = self.post_self_attention(target_self_att, target)
 
         # encoder attention
-        align_context =  self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
+        align_context = self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
             if self.alignment_assisted > 0 else None
 
-        target_enc_att = self.enc_attention(queries=self.pre_enc_attention(target, None),
+        # TODO return attention values
+        target_enc_att, target_enc_att_val = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,
                                             bias=source_bias,
                                             additional_head=align_context) \
-            if not self.alignment_model else align_context
+            if not self.alignment_model else (align_context, alignment)  # TODO check if shapes are correct
 
         if target_enc_att is None:
             target_enc_att = mx.sym.zeros_like(data=target, name="%szeros_target_enc_att" % self.prefix)
@@ -226,7 +227,7 @@ class TransformerDecoderBlock:
         target_ff = self.ff(self.pre_ff(target, None))
         target = self.post_ff(target_ff, target)
 
-        return target
+        return target, target_enc_att_val
 
 
 class TransformerProcessBlock:
