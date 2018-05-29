@@ -91,7 +91,7 @@ class Decoder(ABC):
                     *states: mx.sym.Symbol,
                     alignment: mx.sym.Symbol = None,
                     last_alignment: mx.sym.Symbol = None,
-                    output_embed_prev: mx.sym.Symbol) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    output_embed_prev: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -289,7 +289,8 @@ class TransformerDecoder(Decoder):
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
                     alignment: mx.sym.Symbol = None,
-                    last_alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    last_alignment: mx.sym.Symbol = None,
+                    output_embed_prev: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -703,7 +704,7 @@ class RecurrentDecoder(Decoder):
                     *states: mx.sym.Symbol,
                     alignment: mx.sym.Symbol = None,
                     last_alignment: mx.sym.Symbol = None,
-                    output_embed_prev: mx.sym.Symbol) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    output_embed_prev: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -951,7 +952,8 @@ class RecurrentDecoder(Decoder):
                                          last_alignment_slice)
 
         context = attention_state.context
-        if self.context_pos_embedding:
+        if self.context_pos_embedding and \
+                        type(self.context_pos_embedding) != encoder.NoOpPositionalEmbeddings:
             context = self.context_pos_embedding.encode_positions(mx.sym.reshape(data=alignment_slice,
                                                                                  shape=(0,)),
                                                                   context)
@@ -1224,7 +1226,8 @@ class ConvolutionalDecoder(Decoder):
                     source_encoded_max_length: int,
                     *states: mx.sym.Symbol,
                     alignment: mx.sym.Symbol = None,
-                    last_alignment: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
+                    last_alignment: mx.sym.Symbol = None,
+                    output_embed_prev: mx.sym.Symbol = None) -> Tuple[mx.sym.Symbol, mx.sym.Symbol, List[mx.sym.Symbol]]:
         """
         Decodes a single time step given the current step, the previous embedded target word,
         and previous decoder states.
@@ -1237,6 +1240,7 @@ class ConvolutionalDecoder(Decoder):
         :param states: Arbitrary list of decoder states.
         :param alignment: alignment source positions.  Shape (batch_size,)
         :param last_alignment: last aligned source positions.  Shape (batch_size,)
+        :param output_embed_prev: previous output label embeddings  Shape (batch_size, output_num_embed)
         :return: logit inputs, attention probabilities, next decoder states.
         """
         # Source_encoded: (batch_size, source_encoded_max_length, encoder_depth)

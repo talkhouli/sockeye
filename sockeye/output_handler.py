@@ -13,6 +13,7 @@
 
 from abc import ABC, abstractmethod
 import sys
+import numpy as np
 from typing import Optional
 
 import constants as C
@@ -51,6 +52,8 @@ def get_output_handler(output_type: str,
         return AlignmentsOutputHandler(output_stream)
     elif output_type == C.OUTPUT_HANDLER_JOINT:
         return JointOutputHandler(output_stream)
+    elif output_type == C.OUTPUT_HANDLER_ALIGNMENT_ONE_HOT:
+        return StringWithAlignmentOneHotMatrixOutputHandler(output_stream)
     else:
         raise ValueError("unknown output type")
 
@@ -200,6 +203,61 @@ class StringWithAlignmentsOutputHandler(StringOutputHandler):
         alignments = " ".join(
             ["%d-%d" % (s, t) for s, t in get_alignments(t_output.attention_matrix, threshold=self.threshold)])
         self.stream.write("%s\t%s\n" % (t_output.translation, alignments))
+        self.stream.flush()
+
+class StringWithAlignmentOneHotMatrixOutputHandler(StringOutputHandler):
+    """
+    Output handler to write translations and an alignment matrix to a stream.
+    The alignment is printed as one hot rows.
+    Note that unlike other output handlers each input sentence will result in an output
+    consisting of multiple lines.
+    More concretely the format is:
+
+    ```
+    sentence id ||| target words ||| score ||| source words ||| number of source words ||| number of target words
+    ALIGNMENT FOR SRC_POS_1
+    ALIGNMENT FOR SRC_POS_1
+    ...
+    ALIGNMENT FOR SRC_POS_J
+    ```
+
+    where the alignment is a list of probabilities of alignment to the source words.
+
+    :param stream: Stream to write translations and alignments to.
+    """
+
+    def __init__(self, stream) -> None:
+        super().__init__(stream)
+
+    def handle(self,
+               t_input: inference.TranslatorInput,
+               t_output: inference.TranslatorOutput,
+               t_walltime: float = 0.):
+        """
+        :param t_input: Translator input.
+        :param t_output: Translator output.
+        :param t_walltime: Total wall-clock time for translation.
+        """
+        line = "{sent_id:d} ||| {target} ||| {score:f} ||| {source} ||| {source_len:d} ||| {target_len:d}\n"
+        self.stream.write(line.format(sent_id=t_input.id,
+                                      target=" ".join(t_output.tokens),
+                                      score=t_output.score,
+                                      source=" ".join(t_input.tokens),
+                                      source_len=len(t_input.tokens),
+                                      target_len=len(t_output.tokens)))
+        alignment_t2s = t_output.alignment[1:len(t_output.tokens)]
+        alignment_s2t = []
+        #for j in range(0,len(t_input.tokens):
+        #    alignment_s2t.append(-1 if j not in alignment_t2s else alignment_t2s.index[j])
+        #    alignment_s2t = [alignment_t2s[i] for i in alignment_t2s]
+        for j in range(0, len(t_input.tokens)):
+            many_hot_vector = [0.0 for i in range(0,len(t_output.tokens))]
+            for i in np.where(alignment_t2s==j)[0]:
+                many_hot_vector[i] = 1.0
+            self.stream.write(" ".join(["%f" % value for value in many_hot_vector]))
+            self.stream.write("\n")
+
+        self.stream.write("\n")
         self.stream.flush()
 
 
