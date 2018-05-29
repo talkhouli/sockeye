@@ -29,6 +29,7 @@ import lexicon
 import model
 import utils
 import vocab
+import decoder
 
 logger = logging.getLogger(__name__)
 
@@ -266,10 +267,13 @@ class InferenceModel(model.SockeyeModel):
             data_names = [C.TARGET_NAME] + state_names +\
                             ([C.LAST_ALIGNMENT_NAME
                                 if self.alignment_model
+                                    and isinstance(self.config.config_decoder,decoder.RecurrentDecoderConfig)
                                     and self.config.config_decoder.attention_config.last_aligned_context==True
                                 else C.ALIGNMENT_NAME]
                              if self.alignment_based else []) + \
                          ([C.ALIGNMENT_JUMP_LABEL_NAME] if self.alignment_model
+                                                           and isinstance(self.config.config_decoder,
+                                                                          decoder.RecurrentDecoderConfig)
                                                            and self.config.config_decoder.label_num_layers > 0
                           else [] )
 
@@ -312,6 +316,7 @@ class InferenceModel(model.SockeyeModel):
                                       self.encoder.get_num_hidden()) +
             ([mx.io.DataDesc(name=C.LAST_ALIGNMENT_NAME
                                     if self.alignment_model \
+                                        and isinstance(self.config.config_decoder, decoder.RecurrentDecoderConfig)
                                         and self.config.config_decoder.attention_config.last_aligned_context==True
                                     else C.ALIGNMENT_NAME,
                             shape=(self.batch_size * self.beam_size,1),
@@ -319,6 +324,7 @@ class InferenceModel(model.SockeyeModel):
             ([mx.io.DataDesc(name=C.ALIGNMENT_JUMP_LABEL_NAME,
                             shape=(self.batch_size * self.beam_size, 1),
                             layout="NT")] if self.alignment_model \
+                                    and isinstance(self.config.config_decoder, decoder.RecurrentDecoderConfig)
                                     and self.config.config_decoder.label_num_layers > 0 else [])
         )
 
@@ -412,7 +418,8 @@ class InferenceModel(model.SockeyeModel):
             if self.alignment_based:
                 if self.alignment_model:
                     # shift by 1 due to BOS
-                    if self.config.config_decoder.attention_config.last_aligned_context:
+                    if isinstance(self.config.config_decoder,decoder.RecurrentDecoderConfig) and \
+                            self.config.config_decoder.attention_config.last_aligned_context:
                         alignment = [last_alignment + 1]
                     else:
                         alignment = [prev_alignment + 1]
@@ -826,6 +833,9 @@ class Translator:
         self.batch_size = self.models[0].batch_size
         self.lex_weight = lex_weight
         self.align_weight = align_weight
+        self.dictionary = None
+        self.dictionary_override_with_max_attention = False
+        self.seq_idx = 0  #used with dictionaries, batching not supported
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -932,6 +942,7 @@ class Translator:
                                                 key=lambda args : len(args[0].tokens),
                                                 reverse=True)))
         # translate in batch-sized blocks over input chunks
+
         for batch_id, (chunks, ref_chunks) in enumerate(itertools.zip_longest(utils.grouper(input_chunks, self.batch_size),
                                                                 utils.grouper(reference_chunks, self.batch_size)
                                                                     if reference_chunks is not None else [None])):
@@ -947,6 +958,7 @@ class Translator:
                 if len(ref_chunks) > 0 and ref_chunks[0] is not None:
                     reference_batch = reference_batch + [reference_batch[0]] * rest
             batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
+            self.seq_idx += 1
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
@@ -1311,6 +1323,60 @@ class Translator:
             neg_logprobs = self.interpolation_func(probs)
         return neg_logprobs, attention_prob_score
 
+    def _override_scores_with_dictionary(self,scores,attention_scores,source,t,alignment_based):
+        if alignment_based:
+            if self.dictionary_override_with_max_attention:
+                max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+                max_attention_cpu = max_attention.copyto(source.context)
+                #new_source = mx.nd.expand_dims(source, axis=1).broadcast_to(
+                #    (max_attention_cpu.shape[0], scores.shape[1], source.shape[1]))
+                #(batch_size * num_src_hyp_pos, source_len)
+                #new_source = mx.nd.reshape(new_source,shape=(-3,0))
+                #max_attention_source_words = mx.nd.batch_take(
+                #    new_source,
+                #    max_attention_cpu.astype(dtype="int32")).asnumpy()
+                for beam_idx in range (0,max_attention_cpu.shape[0]):
+                    for idx,src_pos in enumerate(max_attention_cpu[beam_idx]):
+                        source_word = mx.nd.take(source[0],src_pos.astype(dtype="int32"))
+                        #src_pos = src_pos.astype(dtype="int32").asscalar() -align_idx_offset(t) +\
+                        #          (1 if self.use_unaligned else 0)
+                        source_word_str = self.vocab_source_inv[int(source_word.asscalar())]
+                        if source_word_str in self.dictionary[self.seq_idx]:
+                            target_word_str = self.dictionary[self.seq_idx][source_word_str]
+                            if target_word_str in self.vocab_target:
+                                target_word = self.vocab_target[target_word_str]
+                                target_word_score = scores[beam_idx, idx, target_word]
+                                scores[beam_idx, idx, :] = np.inf
+                                scores[beam_idx, idx, target_word] = target_word_score
+            else:
+                for j in range(0, scores.shape[1]):
+                    src_pos = mx.nd.array([j + align_idx_offset(t) - (1 if self.use_unaligned else 0)],dtype="int32")
+                    source_word = mx.nd.pick(source, src_pos).asnumpy()
+                    source_word_str = self.vocab_source_inv[int(source_word)]
+                    if self.seq_idx in self.dictionary and source_word_str in self.dictionary[self.seq_idx]:
+                        target_word_str = self.dictionary[self.seq_idx][source_word_str]
+                        if target_word_str in self.vocab_target:
+                            target_word = self.vocab_target[target_word_str]
+                            target_word_scores = scores[:, j, target_word]
+                            scores[:, j, :] = np.inf
+                            scores[:, j, target_word] = target_word_scores
+
+        else:
+            max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+            max_attention_cpu = max_attention.copyto(source.context)
+            max_attention_source_words = mx.nd.pick(
+                source.broadcast_to((max_attention_cpu.shape[0], source.shape[1])),
+                max_attention_cpu.astype(dtype="int32")).asnumpy()
+            for beam_idx, word in enumerate(max_attention_source_words):
+                source_word_str = self.vocab_source_inv[int(word)]
+                if self.seq_idx in self.dictionary and source_word_str in self.dictionary[self.seq_idx]:
+                    target_word_str = self.dictionary[self.seq_idx][source_word_str]
+                    if target_word_str in self.vocab_target:
+                        target_word = self.vocab_target[target_word_str]
+                        target_word_score = scores[beam_idx, 0, target_word]
+                        scores[beam_idx, 0, :] = np.inf
+                        scores[beam_idx, 0, target_word] = target_word_score
+
     def _beam_search(self,
                      source: mx.nd.NDArray,
                      source_length: int,
@@ -1437,13 +1503,6 @@ class Translator:
                                                                        previous_jump=alignment_jump)
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
-            #alignment_np = np.swapaxes(alignment.asnumpy(),0,1)
-            #scores = scores[0]
-            #attention_scores = attention_scores[0]
-            #TODO: FOR DEBUGGING ONLY!!!!ms
-            #model_states[0] = model_states[0][0]
-            #model_states[1] = model_states[1][0]
-            #alignment = alignment[0]
 
             # (2) compute length-normalized accumulated scores in place
             if t == 1 and self.batch_size == 1:  # only one hypothesis at t==1
@@ -1458,21 +1517,35 @@ class Translator:
                 # this is equivalent to doing this in numpy:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
-                active_positions = slice(0, min(
-                    max(0, min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1)) + 1,
-                    max(actual_source_length)
-                ))
+                if alignment_based:
+                    active_positions = slice(0, min(
+                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                        max(actual_source_length)
+                    ))
+                else:
+                    active_positions = slice(0,1)
                 scores = mx.nd.where(finished, pad_dist[:, active_positions, :], scores)
 
             # (3) get beam_size winning hypotheses for each sentence block separately
             # TODO(fhieber): once mx.nd.topk is sped-up no numpy conversion necessary anymore.
             scores = scores.asnumpy()  # convert to numpy once to minimize cross-device copying
+            #####
+            if self.dictionary:
+                self._override_scores_with_dictionary(scores,attention_scores,source,t,alignment_based)
+            #DEBUGGING
+            #score_wish = []
+            #score_wish[:] = scores[:,9,306]
+            #scores[:,9,:] = np.inf
+            #scores[:, 9, 306] = score_wish
             for sent in range(self.batch_size):
                 rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
-                active_positions = slice(0, min(
-                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
-                    max(actual_source_length)
-                ))
+                if alignment_based:
+                    active_positions = slice(0, min(
+                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                        max(actual_source_length)
+                    ))
+                else:
+                    active_positions = slice(0, 1)
 
                 sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
                 if reference is not None and len(reference)>0:

@@ -90,12 +90,16 @@ def main():
                                           lex_weight=args.lex_weight,
                                           align_weight=args.align_weight
                                           )
+        translator.dictionary = data_io.read_dictionary(args.dictionary) if args.dictionary else None
+        translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
+        if translator.dictionary_override_with_max_attention:
+            assert(args.batch_size==1) # batching not supported with dictionary override yet
         read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
-
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,
                        chunk_size: Optional[int], source: Optional[str] = None,
-                       reference: Optional[str] = None) -> None:
+                       reference: Optional[str] = None,
+                       dictionary: Optional[dict] = None) -> None:
     """
     Reads from either a file or stdin and translates each line, calling the output_handler with the result.
 
@@ -103,6 +107,8 @@ def read_and_translate(translator: inference.Translator, output_handler: output_
     :param translator: Translator that will translate each line of input.
     :param chunk_size: The size of the portion to read at a time from the input.
     :param source: Path to file which will be translated line-by-line if included, if none use stdin.
+    :param reference: Path to reference file.
+    :param dictionary: dictionary to constrain translation.
     """
     source_data = sys.stdin if source is None else data_io.smart_open(source)
     reference_data = None if reference is None else data_io.smart_open(reference)
@@ -139,8 +145,8 @@ def read_and_translate(translator: inference.Translator, output_handler: output_
 
 
 def translate(output_handler: output_handler.OutputHandler, source_data: Iterable[str],
-                    translator: inference.Translator, chunk_id: int = 0,
-                    reference_data: Iterable[str] = None) -> float:
+              translator: inference.Translator, chunk_id: int = 0,
+              reference_data: Iterable[str] = None) -> float:
     """
     Translates each line from source_data, calling output handler after translating a batch.
 

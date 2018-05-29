@@ -310,6 +310,53 @@ def read_content(path: str, limit: Optional[int] = None, alignment: bool = False
             else:
                 yield list(get_tokens(line))
 
+def print_dictionary(output_file: str,dictionary: [dict],max_per_sequence):
+    '''
+    print dictionary in format: source_word target_word
+    :param output_file
+    :param dictionary: list of dictionaries dict[seq_idx][target_word]=source_word
+    :param max_per_sequence: maximum number of dictionary entries per sequence
+    :return:
+    '''
+    with open(output_file,'w') as file:
+        for seq_dictionary in dictionary:
+            count =0
+            for target_word, source_word in seq_dictionary.items():
+                file.write("%s\t%s #" % (source_word,target_word))
+                count += 1
+                if count >= max_per_sequence:
+                    break
+            file.write("\n")
+
+def read_stop_list(file):
+    '''
+    reads stop list file consisting of one word per line
+    :param file: path to stop list file
+    :return: stop_list: list of stop words
+    '''
+    stop_list = []
+    with open(file,'r') as file:
+        for line in file:
+            stop_list.append(line.strip().lower())
+    return stop_list
+
+
+def read_dictionary(dictionary_file):
+    '''
+    read dictionary file
+    :param dictionary_file: word-to-word dictionary file, with the format src_word target_word
+    :return: dict(source_word)->target_word
+    '''
+    with open(dictionary_file,'r') as file:
+        dictionary = {}
+        for seq_idx,line in enumerate(file):
+            dictionary[seq_idx] = dict()
+            entries = line.split("#")
+            for entry in entries:
+                toks = entry.split()
+                if len(toks)==2:
+                    dictionary[seq_idx][toks[0]]= toks[1]
+    return dictionary
 
 def get_tokens(line: str) -> Iterator[str]:
     """
