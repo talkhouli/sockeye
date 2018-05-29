@@ -287,7 +287,7 @@ def dot_attention(queries: mx.sym.Symbol,
     :param dropout: Dropout probability.
     :param bias: Optional 3d bias tensor.
     :param prefix: Optional prefix
-    :return: 'Context' vectors for each query. Shape: (n, lq, dv).
+    :return: 'Context' vectors for each query. Shape: (n, lq, dv), 'probs' vector for each query (n, lq, lk).
     """
     utils.check_condition(lengths is not None or bias is not None,
                           "Must provide either length or bias argument for masking")
@@ -313,7 +313,8 @@ def dot_attention(queries: mx.sym.Symbol,
     probs = mx.sym.Dropout(probs, p=dropout) if dropout > 0.0 else probs
 
     # (n, lq, lk) x (n, lk, dv) -> (n, lq, dv)
-    return mx.sym.batch_dot(lhs=probs, rhs=values, name='%scontexts' % prefix), probs
+    res = mx.sym.batch_dot(lhs=probs, rhs=values, name='%scontexts' % prefix)
+    return res, probs
 
 
 class MultiHeadAttentionBase:
@@ -350,7 +351,8 @@ class MultiHeadAttentionBase:
                 values: mx.sym.Symbol,
                 lengths: Optional[mx.sym.Symbol] = None,
                 bias: Optional[mx.sym.Symbol] = None,
-                additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                additional_head: Optional[mx.sym.Symbol] = None,
+                additional_probs: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Returns context vectors of multi-head dot attention.
 
@@ -366,6 +368,7 @@ class MultiHeadAttentionBase:
 
         # (batch*heads, length, depth/heads)
         queries = split_heads(queries, self.depth_per_head, self.heads)
+
         keys = split_heads(keys, self.depth_per_head, self.heads)
         values = split_heads(values, self.depth_per_head, self.heads)
         lengths = broadcast_to_heads(lengths, self.heads, ndim=1, fold_heads=True) if lengths is not None else lengths
@@ -373,12 +376,15 @@ class MultiHeadAttentionBase:
         # (batch*heads, query_max_length, depth_per_head)
         contexts, probs = dot_attention(queries, keys, values,
                                  lengths=lengths, dropout=self.dropout, bias=bias, prefix=self.prefix)
-
         # (batch, query_max_length, depth)
         contexts = combine_heads(contexts, self.depth_per_head, self.heads)
+        # (batch, heads, query_max_length,  length)
+        probs = mx.sym.reshape(probs, shape=(-4, -1, self.heads, 0, 0))
 
         if additional_head is not None:
             contexts = mx.sym.concat(contexts, additional_head, dim=2, name="%salign_head_concat" % self.prefix)
+        if additional_probs is not None:
+            probs = mx.sym.concat(probs, additional_probs, dim=1, name="%salign_head_probs_concat" % self.prefix)
 
         # contexts: (batch, query_max_length, output_depth)
         contexts = mx.sym.FullyConnected(data=contexts,
@@ -481,7 +487,8 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                  memory: mx.sym.Symbol,
                  memory_lengths: Optional[mx.sym.Symbol] = None,
                  bias: Optional[mx.sym.Symbol] = None,
-                 additional_head: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
+                 additional_head: Optional[mx.sym.Symbol] = None,
+                 additional_probs: Optional[mx.sym.Symbol] = None) -> mx.sym.Symbol:
         """
         Computes multi-head attention for queries given a memory tensor.
         If sequence lengths are provided, they will be used to mask the attention scores.
@@ -519,7 +526,8 @@ class MultiHeadAttention(MultiHeadAttentionBase):
                             keys,
                             values,
                             bias=bias,
-                            additional_head=additional_head)
+                            additional_head=additional_head,
+                            additional_probs=additional_probs)
 
 
 class Alignment:
@@ -552,7 +560,9 @@ class Alignment:
                                         flatten=False)
         context = mx.sym.where(self.alignment_assisted > self.align_assisted_prob, context, mx.sym.zeros_like(context))
         context = mx.sym.Custom(op_type="InferenceScale", data=context, scalar=self.alignment_assisted)
-        return context
+        attention_scores = mx.sym.swapaxes(attention_scores, 1, 2)
+        attention_scores = mx.sym.reshape(attention_scores, shape=(0, 0, 1, -1))
+        return context, attention_scores
 
 
 class ProjectedDotAttention:

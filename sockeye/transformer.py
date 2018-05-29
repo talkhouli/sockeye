@@ -208,14 +208,15 @@ class TransformerDecoderBlock:
         target = self.post_self_attention(target_self_att, target)
 
         # encoder attention
-        align_context = self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
-            if self.alignment_assisted > 0 else None
+        align_context, align_probs = self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
+            if self.alignment_assisted > 0 else (None, None)
 
         # TODO return attention values
         target_enc_att, target_enc_att_val = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,
                                             bias=source_bias,
-                                            additional_head=align_context) \
+                                            additional_head=align_context,
+                                            additional_probs=align_probs) \
             if not self.alignment_model else (align_context, alignment)  # TODO check if shapes are correct
 
         if target_enc_att is None:
