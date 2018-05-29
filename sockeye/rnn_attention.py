@@ -671,7 +671,10 @@ class MlpAttention(Attention):
         self._ln = layers.LayerNormalization(num_hidden=attention_num_hidden,
                                              prefix="%snorm" % self.prefix) if layer_normalization else None
         self.alignment_assisted = alignment_assisted
-        self.alignment_layer = Alignment(input_previous_word,False) if alignment_assisted > 0.0 else None
+        self.alignment_layer = Alignment(input_previous_word,False) if (isinstance(alignment_assisted, float)
+                                                                        and alignment_assisted > 0.0 )\
+                                                                    or (isinstance(alignment_assisted, list)
+                                                                           and max(alignment_assisted) > 0.0) else None
         self.alignment_interpolation = alignment_interpolation
         self.dynamic_alignment_interpolation = dynamic_alignment_interpolation
         
