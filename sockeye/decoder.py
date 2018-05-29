@@ -232,7 +232,8 @@ class TransformerDecoder(Decoder):
                         target_embed_lengths: mx.sym.Symbol,
                         target_embed_max_length: int,
                         alignment: mx.sym.Symbol = None,
-                        last_alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
+                        last_alignment: mx.sym.Symbol = None,
+                        output_embed: mx.sym.Symbol = None) -> mx.sym.Symbol:
         """
         Decodes a sequence of embedded target words and returns sequence of last decoder
         representations for each time step.
@@ -246,6 +247,12 @@ class TransformerDecoder(Decoder):
         :param alignment source positions.  Shape (batch_size,target_embed_max_length)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
+
+        self.debug_alignment = alignment
+        # NOTE: add last alignment to debug symbols so we "use" it and the software does not complain
+        self.debug_last_alignment = last_alignment
+        self.debug_attention = []
+
         # (batch_size, source_max_length, num_source_embed)
         source_encoded = mx.sym.swapaxes(source_encoded, dim1=0, dim2=1)
 

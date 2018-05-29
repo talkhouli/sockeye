@@ -132,7 +132,10 @@ class TrainingModel(model.SockeyeModel):
              target_embed_seq_len) = self.embedding_target.encode(target, target_length, target_seq_len)
 
             #output embedding
-            (output_embed, _, _ ) = self.embedding_output.encode(labels, target_length, target_seq_len)
+            if self.embedding_output is not None:
+                (output_embed, _, _ ) = self.embedding_output.encode(labels, target_length, target_seq_len)
+            else:
+                output_embed = None
 
             # encoder
             # source_encoded: (source_encoded_length, batch_size, encoder_depth)
