@@ -380,11 +380,16 @@ class MultiHeadAttentionBase:
         contexts = combine_heads(contexts, self.depth_per_head, self.heads)
         # (batch, heads, query_max_length,  length)
         probs = mx.sym.reshape(probs, shape=(-4, -1, self.heads, 0, 0))
+        probs_scaling_factor = self.heads
 
         if additional_head is not None:
             contexts = mx.sym.concat(contexts, additional_head, dim=2, name="%salign_head_concat" % self.prefix)
         if additional_probs is not None:
             probs = mx.sym.concat(probs, additional_probs, dim=1, name="%salign_head_probs_concat" % self.prefix)
+            probs_scaling_factor += 1
+
+        probs = probs/probs_scaling_factor
+
 
         # contexts: (batch, query_max_length, output_depth)
         contexts = mx.sym.FullyConnected(data=contexts,
