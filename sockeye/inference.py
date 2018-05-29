@@ -362,7 +362,8 @@ class InferenceModel(model.SockeyeModel):
                     last_alignment: mx.nd.NDArray = None,
                     previous_jump: mx.nd.NDArray = None,
                     actual_source_length: List[int] = [],
-                    use_unaligned: bool = True) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
+                    use_unaligned: bool = True,
+                    skip_alignments: List[bool] = []) -> Tuple[mx.nd.NDArray, mx.nd.NDArray, 'ModelState', mx.nd.NDArray]:
         """
         Runs forward pass of the single-step decoder.
 
@@ -414,6 +415,7 @@ class InferenceModel(model.SockeyeModel):
             j = align_pos + 1 if use_unaligned else align_pos
             end = j
             #print(step, align_pos, j, align_idx)
+
             alignment = []
             if self.alignment_based:
                 if self.alignment_model:
@@ -425,6 +427,14 @@ class InferenceModel(model.SockeyeModel):
                         alignment = [prev_alignment + 1]
                 else:
                     #hypothesize alignment
+
+                    if len(skip_alignments) > align_idx \
+                            and skip_alignments[align_idx]\
+                            and not np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)])\
+                            and not align_idx == actual_source_length: # always hypothesize sentence end
+                        # logger.info("skip alignment point %d" % align_idx)
+                        continue
+
                     alignment = [align_idx*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
                     if alignment_result is None:
                         alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
@@ -816,7 +826,8 @@ class Translator:
                  vocab_target: Dict[str, int],
                  restrict_lexicon: Optional[lexicon.TopKLexicon] = None,
                  lex_weight: float = 1.,
-                 align_weight: float = 0.
+                 align_weight: float = 0.,
+                 align_skip_threshold: float = 0.
                  ) -> None:
         self.context = context
         self.length_penalty = length_penalty
@@ -836,6 +847,7 @@ class Translator:
         self.dictionary = None
         self.dictionary_override_with_max_attention = False
         self.seq_idx = 0  #used with dictionaries, batching not supported
+        self.align_skip_threshold = align_skip_threshold
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -936,6 +948,9 @@ class Translator:
                 if trans_input.reference_tokens:
                     reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
 
+        if len(input_chunks) == 0:
+            logger.warning("no sentences left for translation")
+            return []
 
         # Sort longest to shortest (to rather fill batches of shorter than longer sequences)
         input_chunks,reference_chunks  = (list(t) for t in zip(*sorted(itertools.zip_longest(input_chunks,reference_chunks),
@@ -995,7 +1010,9 @@ class Translator:
 
         utils.check_condition(C.PAD_ID == 0, "pad id should be 0")
         source = mx.nd.zeros((len(sequences), bucket_key))
-        reference = mx.nd.zeros((len(reference_sequences), self.max_output_length)) if reference_sequences else []
+        # max reference length is longest reference in batch + 1 for EOS
+        max_reference_length = max([len(x) for x in reference_sequences]) + 1 if reference_sequences else 0
+        reference = mx.nd.zeros((len(reference_sequences), max_reference_length)) if reference_sequences else []
         source_length = []
         for j, (tokens, reference_tokens) in enumerate(itertools.zip_longest(sequences,reference_sequences)):
             ids = data_io.tokens2ids(tokens,
@@ -1139,39 +1156,18 @@ class Translator:
         bucket_key = (source_length, step)
         prev_word = sequences[:, step - 1]
 
-        model_probs, model_attention_probs, model_states = [], [], []
-        # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
-        #lexical models
-        for model, out_w, out_b, state in itertools.zip_longest(
-                self.models, models_output_layer_w, models_output_layer_b, states):
-            #alignment models evaluated later
-            if model.alignment_model:
-                continue
-            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key,
-                                                                                       state,
-                                                                                       step=step,
-                                                                                       actual_source_length=actual_soruce_length,
-                                                                                       use_unaligned=self.use_unaligned)
-            # Compute logits and softmax with restricted vocabulary
-            if self.restrict_lexicon:
-                logits = model.output_layer(decoder_outputs, out_w, out_b)
-                probs = mx.nd.softmax(logits)
-            else:
-                # Otherwise decoder outputs are already target vocab probs
-                probs = decoder_outputs
-            model_probs.append(probs)
-            model_attention_probs.append(attention_probs)
-            model_states.append(state)
 
-        neg_logprobs , attention_probs = self._combine_predictions_per_position(model_probs,model_attention_probs)
+        model_probs, model_attention_probs, model_states = [], [], [None]*len(self.models)
 
-        #alignment models
+        # alignment models
         has_align_model = False
-        align_model_probs , align_model_states= [] , []
-        for model, state in itertools.zip_longest(self.models, states):
+        align_model_probs, align_model_states = [], []
+        num_align_models = 0
+        for model_idx, (model, state) in enumerate(itertools.zip_longest(self.models, states)):
             # alignment models evaluated elsewhere
             if not model.alignment_model:
                 continue
+            num_align_models += 1
             has_align_model = True
             probs, _, state, _ = model.run_decoder(prev_word=prev_word,
                                                    bucket_key=bucket_key,
@@ -1183,7 +1179,57 @@ class Translator:
                                                    actual_source_length=actual_soruce_length,
                                                    use_unaligned=self.use_unaligned)
             align_model_probs.append(probs)
-            model_states.append(state)
+            model_states[model_idx] = state
+
+        if self.align_skip_threshold > 0:
+            utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
+            skip_jumps = mx.nd.zeros((self.batch_size*self.beam_size,bucket_key[0]))
+            upper_bound = min(bucket_key[0], C.NUM_ALIGNMENT_JUMPS)
+            start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+            end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+            for idx in range(self.batch_size*self.beam_size):
+                source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
+                target_sel = slice(0, source_sel.stop - source_sel.start)
+                skip_jumps[idx,target_sel] = align_model_probs[0][0, idx, source_sel]
+
+            skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
+            num_skipped_alignments = np.sum(skip_alignments)
+            alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_soruce_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
+            if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)]):
+                num_skipped_alignments = 0
+                skipped_alignments_string = "all"
+            else:
+                skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
+
+            logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
+        else:
+            skip_alignments = []
+
+        # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
+        #lexical models
+        for model_idx, (model, out_w, out_b, state) in enumerate(itertools.zip_longest(
+                self.models, models_output_layer_w, models_output_layer_b, states)):
+            #alignment models evaluated later
+            if model.alignment_model:
+                continue
+            decoder_outputs, attention_probs, state, new_alignment = model.run_decoder(prev_word, bucket_key,
+                                                                                       state,
+                                                                                       step=step,
+                                                                                       actual_source_length=actual_soruce_length,
+                                                                                       use_unaligned=self.use_unaligned,
+                                                                                       skip_alignments=skip_alignments)
+            # Compute logits and softmax with restricted vocabulary
+            if self.restrict_lexicon:
+                logits = model.output_layer(decoder_outputs, out_w, out_b)
+                probs = mx.nd.softmax(logits)
+            else:
+                # Otherwise decoder outputs are already target vocab probs
+                probs = decoder_outputs
+            model_probs.append(probs)
+            model_attention_probs.append(attention_probs)
+            model_states[model_idx] = state
+
+        neg_logprobs , attention_probs = self._combine_predictions_per_position(model_probs,model_attention_probs)
 
         if has_align_model:
             align_neg_logprobs, _ = self._combine_predictions_per_position(align_model_probs) # Alignment mo
@@ -1399,7 +1445,8 @@ class Translator:
                                   model.encoder.get_encoded_seq_len(source_length) for model in self.models),
                               "Models must agree on encoded sequence length")
         # Maximum output length
-        max_output_length = self.models[0].get_max_output_length(source_length)
+        max_output_length = self.models[0].get_max_output_length(source_length) \
+            if reference is None or len(reference) == 0 else reference.shape[1]
 
         # General data structure: each row has batch_size * beam blocks for the 1st sentence, with a full beam,
         # then the next block for the 2nd sentence and so on

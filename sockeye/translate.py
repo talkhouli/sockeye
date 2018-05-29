@@ -88,7 +88,8 @@ def main():
                                                   vocab_target,
                                           restrict_lexicon,
                                           lex_weight=args.lex_weight,
-                                          align_weight=args.align_weight
+                                          align_weight=args.align_weight,
+                                          align_skip_threshold=args.align_threshold
                                           )
         translator.dictionary = data_io.read_dictionary(args.dictionary) if args.dictionary else None
         translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
