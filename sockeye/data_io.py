@@ -640,6 +640,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.data_target = [[] for _ in self.buckets]  # type: ignore
         self.data_label = [[] for _ in self.buckets]  # type: ignore
         self.data_alignment = None
+        self.data_last_alignment = None
         if alignment != []:
             self.data_alignment = [[] for _ in self.buckets]  # type: ignore
             self.data_last_alignment = [[] for _ in self.buckets]  # type: ignore

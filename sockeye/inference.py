@@ -1475,7 +1475,7 @@ class Translator:
         for t in range(1, max_output_length):
 
             # (1) obtain next predictions and advance models' state
-            # scores: (batch_size * beam_size, target_vocab_sicefmntze)
+            # scores: (batch_size * beam_size, target_vocab_size)
             # attention_scores: (batch_size * beam_size, bucket_key)
             scores, attention_scores, model_states = self._decode_step(sequences,
                                                                        t,
