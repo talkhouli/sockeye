@@ -223,6 +223,7 @@ class TransformerDecoder(Decoder):
 
         self.debug_alignment = None
         self.debug_attention = []
+        self.vis_target_enc_attention_layer = 0
 
     def decode_sequence(self,
                         source_encoded: mx.sym.Symbol,
@@ -339,8 +340,8 @@ class TransformerDecoder(Decoder):
         # retrieve precomputed self-attention keys & values for each layer from states.
         layer_caches = self._get_layer_caches_from_states(list(states))
         cache = []  # type: List[mx.sym.Symbol]
-        target_enc_att_sum = None
-        for layer, layer_cache in zip(self.layers, layer_caches):
+        target_enc_atts = []
+        for idx, (layer, layer_cache) in enumerate(zip(self.layers, layer_caches)):
             target, target_enc_att = layer(target=target,
                            target_bias=target_bias,
                            source=source_encoded,
@@ -348,8 +349,8 @@ class TransformerDecoder(Decoder):
                            cache=layer_cache,
                            source_seq_len=source_encoded_max_length,
                            alignment=alignment)
-            if target_enc_att_sum is None:
-                target_enc_att_sum = target_enc_att
+            if self.vis_target_enc_attention_layer == -1 or self.vis_target_enc_attention_layer == idx:
+                target_enc_atts.append(target_enc_att)
             # store updated keys and values in the cache.
             # (layer.__call__() has the side-effect of updating contents of layer_cache)
             cache += [layer_cache['k'], layer_cache['v']]
@@ -362,10 +363,16 @@ class TransformerDecoder(Decoder):
 
 
         # (batch, heads, 1, source length) -> (batch, heads, source length)
-        target_enc_att_sum = mx.sym.reshape(target_enc_att_sum, shape=(0, 0, -1), name="debug")
+        target_enc_att_sum = None
+        for attention  in target_enc_atts:
+            if target_enc_att_sum is None:
+                target_enc_att_sum = mx.sym.sum(mx.sym.reshape(attention, shape=(0, 0, -1)), axis=1, keepdims=False)
+            else:
+                target_enc_att_sum = target_enc_att_sum + mx.sym.sum(mx.sym.reshape(attention, shape=(0, 0, -1)), axis=1,
+                                                keepdims=False)
         # TODO(fhieber): no attention probs for now
         #attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
-        attention_probs = mx.sym.sum(target_enc_att_sum, axis=1, keepdims=False)
+        attention_probs = target_enc_att_sum
 
         new_states = [source_encoded, source_encoded_lengths, cache]
         #self.debug_attention.append(target_enc_att_sum)

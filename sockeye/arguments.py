@@ -1016,6 +1016,11 @@ def add_inference_args(params):
                                default=0.0,
                                help='Probability threshold for alignment points to be considered. 0.0 to disable. '
                                     'Default: %(default)s')
+    decode_params.add_argument('--vis-target-enc-attention-layer',
+                               type=int,
+                               default=0,
+                               help='choose which layer to visualize. -1 to sum up all. '
+                                    'Default: %(default)s')
 
 
 def add_evaluate_args(params):

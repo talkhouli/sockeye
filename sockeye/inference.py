@@ -66,7 +66,8 @@ class InferenceModel(model.SockeyeModel):
                  softmax_temperature: Optional[float] = None,
                  max_output_length_num_stds: int = C.DEFAULT_NUM_STD_MAX_OUTPUT_LENGTH,
                  decoder_return_logit_inputs: bool = False,
-                 cache_output_layer_w_b: bool = False) -> None:
+                 cache_output_layer_w_b: bool = False,
+                 vis_target_enc_attention_layer: int = 0) -> None:
         self.model_version = utils.load_version(os.path.join(model_folder, C.VERSION_NAME))
         logger.info("Model version: %s", self.model_version)
         utils.check_version(self.model_version)
@@ -107,6 +108,8 @@ class InferenceModel(model.SockeyeModel):
         self.cache_output_layer_w_b = cache_output_layer_w_b
         self.output_layer_w = None  # type: mx.nd.NDArray
         self.output_layer_b = None  # type: mx.nd.NDArray
+
+        self.vis_target_enc_attention_layer = vis_target_enc_attention_layer
 
     def initialize(self, max_input_length: int, get_max_output_length_function: Callable):
         """
@@ -241,6 +244,9 @@ class InferenceModel(model.SockeyeModel):
 
             alignment = mx.sym.Variable(C.ALIGNMENT_NAME) if self.alignment_based else None
             last_alignment = mx.sym.Variable(C.LAST_ALIGNMENT_NAME) if self.alignment_based else None
+
+            if hasattr(self.decoder, "vis_target_enc_attention_layer"):
+                self.decoder.vis_target_enc_attention_layer = self.vis_target_enc_attention_layer
 
             # decoder
             # target_decoded: (batch_size, decoder_depth)
@@ -513,7 +519,8 @@ def load_models(context: mx.context.Context,
                 softmax_temperature: Optional[float] = None,
                 max_output_length_num_stds: int = C.DEFAULT_NUM_STD_MAX_OUTPUT_LENGTH,
                 decoder_return_logit_inputs: bool = False,
-                cache_output_layer_w_b: bool = False) -> Tuple[List[InferenceModel], Dict[str, int], Dict[str, int]]:
+                cache_output_layer_w_b: bool = False,
+                vis_target_enc_attention_layer: int = 0) -> Tuple[List[InferenceModel], Dict[str, int], Dict[str, int]]:
     """
     Loads a list of models for inference.
 
@@ -544,7 +551,8 @@ def load_models(context: mx.context.Context,
                                softmax_temperature=softmax_temperature,
                                checkpoint=checkpoint,
                                decoder_return_logit_inputs=decoder_return_logit_inputs,
-                               cache_output_layer_w_b=cache_output_layer_w_b)
+                               cache_output_layer_w_b=cache_output_layer_w_b,
+                               vis_target_enc_attention_layer=vis_target_enc_attention_layer)
         #batching disabled for alignment-based models for now
         #assert not model.alignment_based or batch_size ==1
         models.append(model)
@@ -827,7 +835,7 @@ class Translator:
                  restrict_lexicon: Optional[lexicon.TopKLexicon] = None,
                  lex_weight: float = 1.,
                  align_weight: float = 0.,
-                 align_skip_threshold: float = 0.
+                 align_skip_threshold: float = 0.,
                  ) -> None:
         self.context = context
         self.length_penalty = length_penalty

@@ -73,7 +73,8 @@ def main():
             args.softmax_temperature,
             args.max_output_length_num_stds,
             decoder_return_logit_inputs=args.restrict_lexicon is not None,
-            cache_output_layer_w_b=args.restrict_lexicon is not None)
+            cache_output_layer_w_b=args.restrict_lexicon is not None,
+            vis_target_enc_attention_layer=args.vis_target_enc_attention_layer)
         restrict_lexicon = None # type: TopKLexicon
         if args.restrict_lexicon:
             restrict_lexicon = TopKLexicon(vocab_source, vocab_target)
