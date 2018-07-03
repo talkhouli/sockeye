@@ -981,10 +981,12 @@ class Translator:
                 if len(ref_chunks) > 0 and ref_chunks[0] is not None:
                     reference_batch = reference_batch + [reference_batch[0]] * rest
             batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
+
             self.seq_idx += 1
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
+
             for chunk, translation in zip(chunks, batch_translations):
                 translated_chunks.append(TranslatedChunk(chunk.id, chunk.chunk_id, translation))
         # Sort by input idx and then chunk id
@@ -1559,6 +1561,7 @@ class Translator:
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
 
+
             # (2) compute length-normalized accumulated scores in place
             if t == 1 and self.batch_size == 1:  # only one hypothesis at t==1
                 scores = scores[:1] / self.length_penalty(lengths[:1])
@@ -1577,8 +1580,12 @@ class Translator:
                         min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
                         max(actual_source_length)
                     ))
+                    logger.info("active posititions %s, actual source lengths %s, targent position %d" % (active_positions, actual_source_length, t))
                 else:
                     active_positions = slice(0,1)
+
+                if active_positions == slice(0,0):
+                    break
                 scores = mx.nd.where(finished, pad_dist[:, active_positions, :], scores)
 
             # (3) get beam_size winning hypotheses for each sentence block separately
