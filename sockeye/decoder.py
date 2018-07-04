@@ -341,6 +341,7 @@ class TransformerDecoder(Decoder):
         layer_caches = self._get_layer_caches_from_states(list(states))
         cache = []  # type: List[mx.sym.Symbol]
         target_enc_atts = []
+        target_enc_att_norm = float(len(self.layers)) if self.vis_target_enc_attention_layer else 1.0
         for idx, (layer, layer_cache) in enumerate(zip(self.layers, layer_caches)):
             target, target_enc_att = layer(target=target,
                            target_bias=target_bias,
@@ -370,6 +371,8 @@ class TransformerDecoder(Decoder):
             else:
                 target_enc_att_sum = target_enc_att_sum + mx.sym.sum(mx.sym.reshape(attention, shape=(0, 0, -1)), axis=1,
                                                 keepdims=False)
+
+        target_enc_att_sum = target_enc_att_sum / float(len(target_enc_atts))
         # TODO(fhieber): no attention probs for now
         #attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
         attention_probs = target_enc_att_sum
