@@ -377,7 +377,9 @@ class TransformerDecoder(Decoder):
         # TODO(fhieber): no attention probs for now
         #attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
         attention_probs = target_enc_att_sum
-
+        if attention_probs is None:
+            attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
+            
         new_states = [source_encoded, source_encoded_lengths, cache]
         #self.debug_attention.append(target_enc_att_sum)
         return target, attention_probs, new_states
