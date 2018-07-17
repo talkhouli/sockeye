@@ -1035,11 +1035,13 @@ class Translator:
         if np.max(translation.alignment) > -1:
             target_tokens = [token + '_' + translation.source[translation.alignment[i+1]]
                              if (translation.alignment[i+1]<len(translation.source) and
-                                 (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL)) else token
+                                 (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL
+                                  or token == C.NUM_SYMBOL_2)) else token
                              for i, token in enumerate(target_tokens[:-1])] + [target_tokens[-1]]
         else:
             target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
-                                if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
+                                if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL
+                                    or token == C.NUM_SYMBOL_2) and \
                                     np.argmax(translation.attention_matrix[i + 1]) < len(translation.source) else token
                              for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
@@ -1487,7 +1489,7 @@ class Translator:
         for t in range(1, max_output_length):
 
             # (1) obtain next predictions and advance models' state
-            # scores: (batch_size * beam_size, target_vocab_sicefmntze)
+            # scores: (batch_size * beam_size, target_vocab_size)
             # attention_scores: (batch_size * beam_size, bucket_key)
             scores, attention_scores, model_states = self._decode_step(sequences,
                                                                        t,

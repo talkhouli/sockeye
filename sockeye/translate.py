@@ -21,6 +21,7 @@ from math import ceil
 from contextlib import ExitStack
 from typing import Optional, Iterable
 import itertools
+import utils
 
 import mxnet as mx
 
@@ -93,7 +94,7 @@ def main():
         translator.dictionary = data_io.read_dictionary(args.dictionary) if args.dictionary else None
         translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
         if translator.dictionary_override_with_max_attention:
-            assert(args.batch_size==1) # batching not supported with dictionary override yet
+            utils.check_condition(args.batch_size==1, "batching not supported with dictionary override yet")
         read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,

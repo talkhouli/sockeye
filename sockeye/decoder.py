@@ -217,7 +217,8 @@ class TransformerDecoder(Decoder):
                         target_embed_lengths: mx.sym.Symbol,
                         target_embed_max_length: int,
                         alignment: mx.sym.Symbol = None,
-                        last_alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
+                        last_alignment: mx.sym.Symbol = None,
+                        output_embed: mx.sym.Symbol = None) -> mx.sym.Symbol:
         """
         Decodes a sequence of embedded target words and returns sequence of last decoder
         representations for each time step.
@@ -229,6 +230,8 @@ class TransformerDecoder(Decoder):
         :param target_embed_lengths: Lengths of embedded target sequences. Shape: (batch_size,).
         :param target_embed_max_length: Dimension of the embedded target sequence.
         :param alignment source positions.  Shape (batch_size,target_embed_max_length)
+        :param last_alignment: alignments with unaligned positions replaced by last aligned positions. Shape: (batch_size,target_embed_max_length)
+        :param output_embed: output labels embeddings. Shape: (batch_size,target_embed_max_length,output_num_embed)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
         # (batch_size, source_max_length, num_source_embed)

@@ -552,9 +552,11 @@ def create_model_config(args: argparse.Namespace,
     config_embed_target = encoder.EmbeddingConfig(vocab_size=vocab_target_size,
                                                   num_embed=num_embed_target,
                                                   dropout=embed_dropout_target)
-    config_embed_output = encoder.EmbeddingConfig(vocab_size=vocab_target_size if args.output_classes== C.WORDS else C.NUM_ALIGNMENT_JUMPS,
-                                                  num_embed=config_decoder.rnn_config.num_hidden,
-                                                  dropout=embed_dropout_output)
+    config_embed_output = None
+    if args.decoder != C.CONVOLUTION_TYPE and args.decoder != C.TRANSFORMER_TYPE:
+        config_embed_output = encoder.EmbeddingConfig(vocab_size=vocab_target_size if args.output_classes== C.WORDS else C.NUM_ALIGNMENT_JUMPS,
+                                                      num_embed=config_decoder.rnn_config.num_hidden,
+                                                      dropout=embed_dropout_output)
 
     config_loss = loss.LossConfig(name=args.loss,
                                   vocab_size=vocab_target_size if args.output_classes == C.WORDS else C.NUM_ALIGNMENT_JUMPS,

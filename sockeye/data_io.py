@@ -405,7 +405,10 @@ def tokens2ids(tokens: Iterable[str], vocab: Dict[str, int],
     :return: List of word ids.
     """
     return [vocab.get(C.NUM_SYMBOL, vocab[C.UNK_SYMBOL])
-            if w.startswith(C.NUM_SYMBOL + '_') else vocab.get(w, vocab[C.UNK_SYMBOL])
+                if w.startswith(C.NUM_SYMBOL + '_')
+                else vocab.get(C.NUM_SYMBOL_2, vocab[C.UNK_SYMBOL])
+                    if w.startswith(C.NUM_SYMBOL_2 + '_')
+                    else vocab.get(w, vocab[C.UNK_SYMBOL])
             for w in tokens]
 
 
@@ -640,6 +643,7 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
         self.data_target = [[] for _ in self.buckets]  # type: ignore
         self.data_label = [[] for _ in self.buckets]  # type: ignore
         self.data_alignment = None
+        self.data_last_alignment = None
         if alignment != []:
             self.data_alignment = [[] for _ in self.buckets]  # type: ignore
             self.data_last_alignment = [[] for _ in self.buckets]  # type: ignore
