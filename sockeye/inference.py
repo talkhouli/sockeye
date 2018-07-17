@@ -1023,11 +1023,13 @@ class Translator:
         if np.max(translation.alignment) > -1:
             target_tokens = [token + '_' + translation.source[translation.alignment[i+1]]
                              if (translation.alignment[i+1]<len(translation.source) and
-                                 (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL)) else token
+                                 (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL
+                                  or token == C.NUM_SYMBOL_2)) else token
                              for i, token in enumerate(target_tokens[:-1])] + [target_tokens[-1]]
         else:
             target_tokens = [token + '_' + translation.source[np.argmax(translation.attention_matrix[i+1])]
-                                if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL) and \
+                                if (token == C.UNK_SYMBOL or token == C.NUM_SYMBOL
+                                    or token == C.NUM_SYMBOL_2) and \
                                     np.argmax(translation.attention_matrix[i + 1]) < len(translation.source) else token
                              for i,token in enumerate(target_tokens) ]
         target_string = C.TOKEN_SEPARATOR.join(
