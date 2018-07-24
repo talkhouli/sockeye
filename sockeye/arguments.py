@@ -1016,6 +1016,12 @@ def add_inference_args(params):
                                default=0.0,
                                help='Probability threshold for alignment points to be considered. 0.0 to disable. '
                                     'Default: %(default)s')
+    decode_params.add_argument('--align-beam-size',
+                               type=int,
+                               default=0,
+                               help='Use k-best alignment points to translate, prune all others. 0 to disable. '
+                                    'Not usable if --align-threshold > 0'
+                                    'Default: %(default)s')
     decode_params.add_argument('--vis-target-enc-attention-layer',
                                type=int,
                                default=0,

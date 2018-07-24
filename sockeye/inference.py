@@ -836,6 +836,7 @@ class Translator:
                  lex_weight: float = 1.,
                  align_weight: float = 0.,
                  align_skip_threshold: float = 0.,
+                 align_k_best: int = 0,
                  ) -> None:
         self.context = context
         self.length_penalty = length_penalty
@@ -856,6 +857,11 @@ class Translator:
         self.dictionary_override_with_max_attention = False
         self.seq_idx = 0  #used with dictionaries, batching not supported
         self.align_skip_threshold = align_skip_threshold
+        self.align_k_best = align_k_best
+        utils.check_condition(not (self.align_skip_threshold > 0.0 and self.align_k_best > 0),
+                              "Can not use threshold and histogram pruning at the same time. "
+                              "--align-threshold=%s and --align-beam-size=%s" % (self.align_skip_threshold, self.align_k_best))
+
         # after models are loaded we ensured that they agree on max_input_length, max_output_length and batch size
         self.max_input_length = self.models[0].max_input_length
         self.max_output_length = self.models[0].get_max_output_length(self.max_input_length)
@@ -1134,6 +1140,10 @@ class Translator:
                                            else sources,
                                    source_length + (1 if model.alignment_model else 0)) for model in self.models]
 
+    @staticmethod
+    def _relative_jump_to_abs_alignment(last_alignment, alignments):
+        return alignments - (C.NUM_ALIGNMENT_JUMPS -1)/2 + last_alignment
+
     def _decode_step(self,
                      sequences: mx.nd.NDArray,
                      step: int,
@@ -1214,6 +1224,45 @@ class Translator:
                 skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
 
             logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
+        elif self.align_k_best > 0:
+            utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
+            keep_alignments = mx.nd.zeros(shape=(C.NUM_ALIGNMENT_JUMPS, ))
+            for sent in range(self.batch_size * self.beam_size):
+                rows = slice(sent, (sent + 1))
+                sliced_scores = align_model_probs[0][:, rows, :].reshape(shape=(1, -1))
+                (best_hyp_pos_indices, best_word_indices), scores = utils.smallest_k_mx(
+                    -1*sliced_scores,
+                    self.align_k_best,
+                    False)
+                best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
+                                                                         alignments=best_word_indices)
+                for k in best_word_indices:
+                    keep_alignments[int(k)] = 1
+
+                # sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows,
+                #                                                                                        active_positions,
+                #                                                                                        :]
+                # if reference is not None and len(reference) > 0:
+                #     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
+                # k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else  sliced_scores) - 1)
+                # active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
+                # rest_rows = slice(sent * self.beam_size + k, (sent + 1) * self.beam_size)
+                # # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
+                # (best_hyp_indices_np[active_rows], best_hyp_pos_indices_np[active_rows],
+                #  best_word_indices_np[active_rows]), \
+                # scores_accumulated_np[active_rows] = utils.smallest_k(sliced_scores, k, t == 1)
+                # # replicate to fill the rest of the beam in case of not enough hypotheses
+                # best_hyp_indices_np[rest_rows], best_hyp_pos_indices_np[rest_rows], best_word_indices_np[rest_rows], \
+                # scores_accumulated_np[rest_rows] = best_hyp_indices_np[active_rows][0], \
+                #                                    best_hyp_pos_indices_np[active_rows][0], \
+                #                                    best_word_indices_np[active_rows][0], \
+                #                                    scores_accumulated_np[active_rows][0]
+                #
+                # # offsetting since the returned smallest_k() indices were slice-relative
+                # best_hyp_indices_np[rows] += rows.start
+                # if reference is not None and len(reference) > 0:
+                #     best_word_indices_np[rows] = reference[sent, t - 1].astype("int32").asnumpy()
+            skip_alignments = []
         else:
             skip_alignments = []
 
