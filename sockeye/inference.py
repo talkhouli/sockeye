@@ -416,6 +416,7 @@ class InferenceModel(model.SockeyeModel):
         #    print(step, "", alignment_end_idx)
 
         end = 0
+        skipped = 0
         for align_pos in range(alignment_begin_idx,alignment_end_idx):
             align_idx = align_idx_offset(step) + align_pos if align_pos >= 0 else align_pos
             j = align_pos + 1 if use_unaligned else align_pos
@@ -438,7 +439,8 @@ class InferenceModel(model.SockeyeModel):
                             and skip_alignments[align_idx]\
                             and not np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)])\
                             and not align_idx == actual_source_length: # always hypothesize sentence end
-                        # logger.info("skip alignment point %d" % align_idx)
+                        #logger.info("skip alignment point %d" % align_idx)
+                        skipped += 1
                         continue
 
                     alignment = [align_idx*mx.ndarray.ones(ctx=self.context,shape=alignment_shape,dtype='int32')]
@@ -473,6 +475,7 @@ class InferenceModel(model.SockeyeModel):
             #model_state_result.append([ copy.deepcopy(e) for e in model_state.states])
 
         #print("end", end, out_result)
+        # logger.info("skip %d out of %d alignment points. %d suggested" % (skipped, alignment_end_idx - alignment_begin_idx, mx.nd.sum(skip_alignments > 0)))
         return out_result, attention_probs_result, ModelState(model_state_result), alignment_result
 
     @property
@@ -1226,7 +1229,7 @@ class Translator:
             logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
         elif self.align_k_best > 0:
             utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
-            keep_alignments = mx.nd.zeros(shape=(C.NUM_ALIGNMENT_JUMPS, ))
+            skip_alignments = mx.nd.array([True] * bucket_key[0])
             for sent in range(self.batch_size * self.beam_size):
                 rows = slice(sent, (sent + 1))
                 sliced_scores = align_model_probs[0][:, rows, :].reshape(shape=(1, -1))
@@ -1237,7 +1240,7 @@ class Translator:
                 best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
                                                                          alignments=best_word_indices)
                 for k in best_word_indices:
-                    keep_alignments[int(k)] = 1
+                    skip_alignments[int(k)] = False
 
                 # sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows,
                 #                                                                                        active_positions,
@@ -1262,7 +1265,6 @@ class Translator:
                 # best_hyp_indices_np[rows] += rows.start
                 # if reference is not None and len(reference) > 0:
                 #     best_word_indices_np[rows] = reference[sent, t - 1].astype("int32").asnumpy()
-            skip_alignments = []
         else:
             skip_alignments = []
 
@@ -1631,7 +1633,7 @@ class Translator:
                         min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
                         max(actual_source_length)
                     ))
-                    logger.info("active posititions %s, actual source lengths %s, targent position %d" % (active_positions, actual_source_length, t))
+                    logger.info("active posititions %s, actual source lengths %s, target position %d" % (active_positions, actual_source_length, t))
                 else:
                     active_positions = slice(0,1)
 
