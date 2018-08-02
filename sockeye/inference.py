@@ -776,18 +776,26 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
     # Concatenation of all target ids without BOS and EOS
     target_ids = [start_id]
     attention_matrices = []
+    coverage = []
+    alignment = []
+    source_ids = []
     for idx, translation in enumerate(translations):
         assert translation.target_ids[0] == start_id
+        source_ids.extend(translation.source[:])
+        coverage.extend(translation.coverage[:])
         if idx == len(translations) - 1:
             target_ids.extend(translation.target_ids[1:])
             attention_matrices.append(translation.attention_matrix[1:, :])
+            alignment.extend(translation.alignment[1:len(translation.target_ids[0:])])
         else:
             if translation.target_ids[-1] in stop_ids:
                 target_ids.extend(translation.target_ids[1:-1])
                 attention_matrices.append(translation.attention_matrix[1:-1, :])
+                alignment.extend(translation.alignment[1:len(translation.target_ids[0:-1])])
             else:
                 target_ids.extend(translation.target_ids[1:])
-                attention_matrices.append(translation.attention_matrix[1:, :])
+                alignment.extend(translation.alignment[1:])
+                alignment.extend(translation.alignment[1:len(translation.target_ids[0:])])
 
     # Combine attention matrices:
     attention_shapes = [attention_matrix.shape for attention_matrix in attention_matrices]
@@ -806,7 +814,8 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
     score = sum(translation.score * length_penalty(len(translation.target_ids))
                 for translation in translations)
     score = score / length_penalty(len(target_ids))
-    return Translation(target_ids, attention_matrix_combined, score)
+    return Translation(target_ids, attention_matrix_combined, score, coverage, alignment, source_ids)
+
 
 
 class Translator:
@@ -946,7 +955,11 @@ class Translator:
                 logger.debug(
                     "Input %d has length (%d) that exceeds max input length (%d). Splitting into chunks of size %d.",
                     trans_input.id, len(trans_input.tokens), self.buckets_source[-1], self.max_input_length)
-                token_chunks = utils.chunks(trans_input.tokens, self.max_input_length)
+                #
+                # split into chunks of size max_input_length - 1 to account for additional EOS token
+                # TODO (gabriel) verify
+                #
+                token_chunks = utils.chunks(trans_input.tokens, self.max_input_length - 1)
                 input_chunks.extend(InputChunk(input_idx, chunk_id, chunk)
                                     for chunk_id, chunk in enumerate(token_chunks))
                 if trans_input.reference_tokens:
