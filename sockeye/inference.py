@@ -951,7 +951,7 @@ class Translator:
                 translated_chunks.append(TranslatedChunk(id=input_idx,
                                                          chunk_id=0,
                                                          translation=empty_translation))
-            elif len(trans_input.tokens) > self.max_input_length:
+            elif len(trans_input.tokens) >= self.max_input_length:
                 logger.debug(
                     "Input %d has length (%d) that exceeds max input length (%d). Splitting into chunks of size %d.",
                     trans_input.id, len(trans_input.tokens), self.buckets_source[-1], self.max_input_length)
