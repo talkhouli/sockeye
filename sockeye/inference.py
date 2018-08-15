@@ -770,32 +770,37 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
 
     :param translations: A list of translations (sequence starting with BOS symbol, attention_matrix), score and length.
     :param start_id: The EOS symbol.
-    :param translations: The BOS symbols.
+    :param stop_ids: The BOS symbols.
     :return: A concatenation if the translations with a score.
     """
     # Concatenation of all target ids without BOS and EOS
     target_ids = [start_id]
     attention_matrices = []
     coverage = []
-    alignment = []
+    alignment = [-1]
     source_ids = []
+    offset = 0
     for idx, translation in enumerate(translations):
         assert translation.target_ids[0] == start_id
         source_ids.extend(translation.source[:])
         coverage.extend(translation.coverage[:])
+        if idx == 0:
+            alignment.extend([translation.alignment[1]])
+
         if idx == len(translations) - 1:
             target_ids.extend(translation.target_ids[1:])
             attention_matrices.append(translation.attention_matrix[1:, :])
-            alignment.extend(translation.alignment[1:len(translation.target_ids[0:])])
+            alignment.extend((offset + translation.alignment[2:len(translation.target_ids[:])]))
         else:
             if translation.target_ids[-1] in stop_ids:
                 target_ids.extend(translation.target_ids[1:-1])
                 attention_matrices.append(translation.attention_matrix[1:-1, :])
-                alignment.extend(translation.alignment[1:len(translation.target_ids[0:-1])])
+                alignment.extend((offset + translation.alignment[2:len(translation.target_ids[:])]))
             else:
                 target_ids.extend(translation.target_ids[1:])
-                alignment.extend(translation.alignment[1:])
-                alignment.extend(translation.alignment[1:len(translation.target_ids[0:])])
+                alignment.extend(offset + translation.alignment[2:])
+
+        offset += len(translation.source)
 
     # Combine attention matrices:
     attention_shapes = [attention_matrix.shape for attention_matrix in attention_matrices]
