@@ -1206,68 +1206,8 @@ class Translator:
             align_model_probs.append(probs)
             model_states[model_idx] = state
 
-        if self.align_skip_threshold > 0:
-            utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
-            skip_jumps = mx.nd.zeros((self.batch_size*self.beam_size,bucket_key[0]))
-            upper_bound = min(bucket_key[0], C.NUM_ALIGNMENT_JUMPS)
-            start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
-            end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
-            for idx in range(self.batch_size*self.beam_size):
-                source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
-                target_sel = slice(0, source_sel.stop - source_sel.start)
-                skip_jumps[idx,target_sel] = align_model_probs[0][0, idx, source_sel]
-
-            skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
-            num_skipped_alignments = np.sum(skip_alignments)
-            alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_soruce_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
-            if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx+align_idx_offset(step)]):
-                num_skipped_alignments = 0
-                skipped_alignments_string = "all"
-            else:
-                skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
-
-            logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
-        elif self.align_k_best > 0:
-            utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
-            skip_alignments = mx.nd.array([True] * bucket_key[0])
-            for sent in range(self.batch_size * self.beam_size):
-                rows = slice(sent, (sent + 1))
-                sliced_scores = align_model_probs[0][:, rows, :].reshape(shape=(1, -1))
-                (best_hyp_pos_indices, best_word_indices), scores = utils.smallest_k_mx(
-                    -1*sliced_scores,
-                    self.align_k_best,
-                    False)
-                best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
-                                                                         alignments=best_word_indices)
-                for k in best_word_indices:
-                    skip_alignments[int(k)] = False
-
-                # sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows,
-                #                                                                                        active_positions,
-                #                                                                                        :]
-                # if reference is not None and len(reference) > 0:
-                #     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
-                # k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else  sliced_scores) - 1)
-                # active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
-                # rest_rows = slice(sent * self.beam_size + k, (sent + 1) * self.beam_size)
-                # # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
-                # (best_hyp_indices_np[active_rows], best_hyp_pos_indices_np[active_rows],
-                #  best_word_indices_np[active_rows]), \
-                # scores_accumulated_np[active_rows] = utils.smallest_k(sliced_scores, k, t == 1)
-                # # replicate to fill the rest of the beam in case of not enough hypotheses
-                # best_hyp_indices_np[rest_rows], best_hyp_pos_indices_np[rest_rows], best_word_indices_np[rest_rows], \
-                # scores_accumulated_np[rest_rows] = best_hyp_indices_np[active_rows][0], \
-                #                                    best_hyp_pos_indices_np[active_rows][0], \
-                #                                    best_word_indices_np[active_rows][0], \
-                #                                    scores_accumulated_np[active_rows][0]
-                #
-                # # offsetting since the returned smallest_k() indices were slice-relative
-                # best_hyp_indices_np[rows] += rows.start
-                # if reference is not None and len(reference) > 0:
-                #     best_word_indices_np[rows] = reference[sent, t - 1].astype("int32").asnumpy()
-        else:
-            skip_alignments = []
-
+        skip_alignments = self.calculate_skip_alignment_list(actual_soruce_length, align_model_probs, bucket_key,
+                                                             last_alignment, num_align_models, step)
         # We use zip_longest here since we'll have empty lists when not using restrict_lexicon
         #lexical models
         for model_idx, (model, out_w, out_b, state) in enumerate(itertools.zip_longest(
@@ -1300,6 +1240,86 @@ class Translator:
                                                           prev_alignment, new_alignment, coverage_vector,
                                                           actual_soruce_length, last_alignment)
         return neg_logprobs, attention_probs, model_states
+
+    def calculate_skip_alignment_list(self, actual_source_length, align_model_probs, bucket_key, last_alignment,
+                                      num_align_models, step):
+        """
+        Calculate list of alignment points to prune
+        :param actual_source_length:
+        :param align_model_probs:
+        :param bucket_key:
+        :param last_alignment:
+        :param num_align_models:
+        :param step:
+        :return:
+        """
+        if self.align_skip_threshold > 0:
+            return self._alignment_threshold_pruning(actual_source_length, align_model_probs, bucket_key,
+                                                                last_alignment, num_align_models, step)
+        elif self.align_k_best > 0:
+            return self._alignment_histogram_pruning(align_model_probs, bucket_key, last_alignment,
+                                                                num_align_models)
+        return []
+
+    def _alignment_histogram_pruning(self, align_model_probs, bucket_key, last_alignment, num_align_models):
+        """
+        calculate list of alignment points to prune by keeping the top-k alingment points per hypothesis
+        :param align_model_probs:
+        :param bucket_key:
+        :param last_alignment:
+        :param num_align_models:
+        :return:
+        """
+        utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
+        skip_alignments = mx.nd.array([True] * bucket_key[0])
+        np_align_model_probs = align_model_probs[0].asnumpy()
+        for sent in range(self.batch_size * self.beam_size):
+            rows = slice(sent, (sent + 1))
+            sliced_scores = np_align_model_probs[:, rows, :]  # .reshape(shape=(1, -1))
+            # returns: best_hyp_indices_, best_hyp_pos_indices , best_word_indices
+            (_, _, best_word_indices), scores = utils.smallest_k(
+                -1 * sliced_scores,
+                self.align_k_best,
+                True)
+            best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
+                                                                     alignments=best_word_indices)
+            for k in best_word_indices:
+                skip_alignments[int(k)] = False
+        return skip_alignments
+
+    def _alignment_threshold_pruning(self, actual_source_length, align_model_probs, bucket_key, last_alignment,
+                                     num_align_models, step):
+        """
+        calculating list of alignment points to prune which do not reach a threshold
+        :param actual_source_length:
+        :param align_model_probs:
+        :param bucket_key:
+        :param last_alignment:
+        :param num_align_models:
+        :param step:
+        :return:
+        """
+        utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
+        skip_jumps = mx.nd.zeros((self.batch_size * self.beam_size, bucket_key[0]))
+        upper_bound = min(bucket_key[0], C.NUM_ALIGNMENT_JUMPS)
+        start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape(
+            (-1,))
+        end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
+        for idx in range(self.batch_size * self.beam_size):
+            source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
+            target_sel = slice(0, source_sel.stop - source_sel.start)
+            skip_jumps[idx, target_sel] = align_model_probs[0][0, idx, source_sel]
+        skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
+        num_skipped_alignments = np.sum(skip_alignments)
+        alignment_end_idx = max(0,
+                                min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
+        if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx + align_idx_offset(step)]):
+            num_skipped_alignments = 0
+            skipped_alignments_string = "all"
+        else:
+            skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
+        logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
+        return skip_alignments
 
     def _combine_lex_align_scores(self,
                                   align_neg_logprobs: mx.nd.NDArray,
