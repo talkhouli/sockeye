@@ -1145,7 +1145,7 @@ class Translator:
 
     @staticmethod
     def _relative_jump_to_abs_alignment(last_alignment, alignments):
-        return alignments - (C.NUM_ALIGNMENT_JUMPS -1)/2 + last_alignment
+        return (alignments - (C.NUM_ALIGNMENT_JUMPS -1)/2 + last_alignment).astype('int32')
 
     def _decode_step(self,
                      sequences: mx.nd.NDArray,
@@ -1271,20 +1271,22 @@ class Translator:
         :return:
         """
         utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
-        skip_alignments = mx.nd.array([True] * bucket_key[0])
+        skip_alignments = np.array([True] * bucket_key[0])
         np_align_model_probs = align_model_probs[0].asnumpy()
         for sent in range(self.batch_size * self.beam_size):
             rows = slice(sent, (sent + 1))
             sliced_scores = np_align_model_probs[:, rows, :]  # .reshape(shape=(1, -1))
             # returns: best_hyp_indices_, best_hyp_pos_indices , best_word_indices
-            (_, _, best_word_indices), scores = utils.smallest_k(
+            (_, _, best_word_indices), _ = utils.smallest_k(
                 -1 * sliced_scores,
                 self.align_k_best,
-                True)
+                False)
             best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
                                                                      alignments=best_word_indices)
             for k in best_word_indices:
-                skip_alignments[int(k)] = False
+                if 0 <= k < bucket_key[0]:
+                    skip_alignments[k] = False
+
         return skip_alignments
 
     def _alignment_threshold_pruning(self, actual_source_length, align_model_probs, bucket_key, last_alignment,
@@ -1299,9 +1301,10 @@ class Translator:
         :param step:
         :return:
         """
+
         utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
         skip_jumps = mx.nd.zeros((self.batch_size * self.beam_size, bucket_key[0]))
-        upper_bound = min(bucket_key[0], C.NUM_ALIGNMENT_JUMPS)
+
         start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape(
             (-1,))
         end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
@@ -1309,7 +1312,9 @@ class Translator:
             source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
             target_sel = slice(0, source_sel.stop - source_sel.start)
             skip_jumps[idx, target_sel] = align_model_probs[0][0, idx, source_sel]
+
         skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
+
         num_skipped_alignments = np.sum(skip_alignments)
         alignment_end_idx = max(0,
                                 min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
