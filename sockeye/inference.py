@@ -1265,13 +1265,17 @@ class Translator:
             skip_alignments = self._alignment_histogram_pruning(self.align_k_best, align_model_probs, bucket_key,
                                                                 num_align_models, start, end)
 
-        alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
-        if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx + align_idx_offset(step)]):
-            num_skipped_alignments = 0
-            skipped_alignments_string = "all"
+        if len(skip_alignments) > 0:
+            alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
+            if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx + align_idx_offset(step)]):
+                num_skipped_alignments = 0
+                skipped_alignments_string = "all"
+            else:
+                skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
+                num_skipped_alignments = np.sum(skip_alignments)
         else:
-            skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
-            num_skipped_alignments = np.sum(skip_alignments)
+            num_skipped_alignments = 0
+            skipped_alignments_string = ""
 
         logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
 
@@ -1293,10 +1297,14 @@ class Translator:
             source_sel = slice(start[sent].asscalar(), end[sent].asscalar())
             rows = slice(sent, (sent + 1))
             sliced_scores = np_align_model_probs[:, rows, source_sel]  # .reshape(shape=(1, -1))
-            # returns: best_hyp_indices_, best_hyp_pos_indices , best_word_indices
-            (_, _, best_word_indices), _ = utils.smallest_k( -1 * sliced_scores, align_beam_size,  False)
-            for k in best_word_indices:
-                if 0 <= k < bucket_key[0]:
+            if (source_sel.stop - source_sel.start) > align_beam_size:
+                # returns: best_hyp_indices_, best_hyp_pos_indices , best_word_indices
+                (_, _, best_word_indices), _ = utils.smallest_k( -1 * sliced_scores, align_beam_size,  False)
+                for k in best_word_indices:
+                    if 0 <= k < bucket_key[0]:
+                        skip_alignments[k] = False
+            else:
+                for k in range(source_sel.stop - source_sel.start):
                     skip_alignments[k] = False
 
         return skip_alignments
