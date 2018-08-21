@@ -1253,20 +1253,36 @@ class Translator:
         :param step:
         :return:
         """
-        if self.align_skip_threshold > 0:
-            return self._alignment_threshold_pruning(actual_source_length, align_model_probs, bucket_key,
-                                                                last_alignment, num_align_models, step)
-        elif self.align_k_best > 0:
-            return self._alignment_histogram_pruning(align_model_probs, bucket_key, last_alignment,
-                                                                num_align_models)
-        return []
+        skip_alignments = []
+        start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape(
+            (-1,))
+        end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
 
-    def _alignment_histogram_pruning(self, align_model_probs, bucket_key, last_alignment, num_align_models):
+        if self.align_skip_threshold > 0:
+            skip_alignments = self._alignment_threshold_pruning(self.align_skip_threshold, align_model_probs, bucket_key,
+                                                                num_align_models, start, end)
+        elif self.align_k_best > 0:
+            skip_alignments = self._alignment_histogram_pruning(self.align_k_best, align_model_probs, bucket_key,
+                                                                num_align_models, start, end)
+
+        alignment_end_idx = max(0, min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
+        if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx + align_idx_offset(step)]):
+            num_skipped_alignments = 0
+            skipped_alignments_string = "all"
+        else:
+            skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
+            num_skipped_alignments = np.sum(skip_alignments)
+
+        logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
+
+        return skip_alignments
+
+    def _alignment_histogram_pruning(self, align_beam_size, align_model_probs, bucket_key,
+                                     num_align_models, start, end):
         """
         calculate list of alignment points to prune by keeping the top-k alingment points per hypothesis
         :param align_model_probs:
         :param bucket_key:
-        :param last_alignment:
         :param num_align_models:
         :return:
         """
@@ -1274,26 +1290,21 @@ class Translator:
         skip_alignments = np.array([True] * bucket_key[0])
         np_align_model_probs = align_model_probs[0].asnumpy()
         for sent in range(self.batch_size * self.beam_size):
+            source_sel = slice(start[sent].asscalar(), end[sent].asscalar())
             rows = slice(sent, (sent + 1))
-            sliced_scores = np_align_model_probs[:, rows, :]  # .reshape(shape=(1, -1))
+            sliced_scores = np_align_model_probs[:, rows, source_sel]  # .reshape(shape=(1, -1))
             # returns: best_hyp_indices_, best_hyp_pos_indices , best_word_indices
-            (_, _, best_word_indices), _ = utils.smallest_k(
-                -1 * sliced_scores,
-                self.align_k_best,
-                False)
-            best_word_indices = self._relative_jump_to_abs_alignment(last_alignment=last_alignment[sent].asnumpy(),
-                                                                     alignments=best_word_indices)
+            (_, _, best_word_indices), _ = utils.smallest_k( -1 * sliced_scores, align_beam_size,  False)
             for k in best_word_indices:
                 if 0 <= k < bucket_key[0]:
                     skip_alignments[k] = False
 
         return skip_alignments
 
-    def _alignment_threshold_pruning(self, actual_source_length, align_model_probs, bucket_key, last_alignment,
-                                     num_align_models, step):
+    def _alignment_threshold_pruning(self, align_skip_threshold, align_model_probs, bucket_key,
+                                     num_align_models, start, end):
         """
         calculating list of alignment points to prune which do not reach a threshold
-        :param actual_source_length:
         :param align_model_probs:
         :param bucket_key:
         :param last_alignment:
@@ -1305,25 +1316,13 @@ class Translator:
         utils.check_condition(num_align_models == 1, "Skip alignments only implemented for one alignment model")
         skip_jumps = mx.nd.zeros((self.batch_size * self.beam_size, bucket_key[0]))
 
-        start = mx.nd.clip((C.NUM_ALIGNMENT_JUMPS - 1) / 2 - last_alignment, 0, C.NUM_ALIGNMENT_JUMPS).reshape(
-            (-1,))
-        end = mx.nd.clip(start + bucket_key[0], 0, C.NUM_ALIGNMENT_JUMPS).reshape((-1,))
         for idx in range(self.batch_size * self.beam_size):
             source_sel = slice(start[idx].asscalar(), end[idx].asscalar())
             target_sel = slice(0, source_sel.stop - source_sel.start)
             skip_jumps[idx, target_sel] = align_model_probs[0][0, idx, source_sel]
 
-        skip_alignments = np.all((skip_jumps < self.align_skip_threshold).asnumpy(), axis=0)
+        skip_alignments = np.all((skip_jumps < align_skip_threshold).asnumpy(), axis=0)
 
-        num_skipped_alignments = np.sum(skip_alignments)
-        alignment_end_idx = max(0,
-                                min(C.MAX_JUMP, max(actual_source_length) - step) + min(C.MAX_JUMP, step - 1)) + 1
-        if np.all(skip_alignments[align_idx_offset(step):alignment_end_idx + align_idx_offset(step)]):
-            num_skipped_alignments = 0
-            skipped_alignments_string = "all"
-        else:
-            skipped_alignments_string = ", ".join([str(i) for i, x in enumerate(skip_alignments) if x])
-        logger.info("num skipped alignments %d [%s]" % (num_skipped_alignments, skipped_alignments_string))
         return skip_alignments
 
     def _combine_lex_align_scores(self,
