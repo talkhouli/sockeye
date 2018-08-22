@@ -417,6 +417,7 @@ class InferenceModel(model.SockeyeModel):
 
         end = 0
         skipped = 0
+        evaluated_positions = 0
         for align_pos in range(alignment_begin_idx,alignment_end_idx):
             align_idx = align_idx_offset(step) + align_pos if align_pos >= 0 else align_pos
             j = align_pos + 1 if use_unaligned else align_pos
@@ -448,6 +449,8 @@ class InferenceModel(model.SockeyeModel):
                         alignment_result = mx.ndarray.zeros(ctx=self.context, shape=(alignment_max_length, *(alignment[0].shape)), dtype='int32')
                     alignment_result[j,:,:] = alignment[0]
                     #alignment_result.append(copy.deepcopy(alignment))
+
+            evaluated_positions += 1
             batch = mx.io.DataBatch(
                 data=[prev_word.as_in_context(self.context)] + model_state.states + alignment + previous_jump,
                 label=None,
@@ -476,6 +479,9 @@ class InferenceModel(model.SockeyeModel):
 
         #print("end", end, out_result)
         # logger.info("skip %d out of %d alignment points. %d suggested" % (skipped, alignment_end_idx - alignment_begin_idx, mx.nd.sum(skip_alignments > 0)))
+        if not self.alignment_model:
+            logger.info("Evaluated positions = %d" % evaluated_positions)
+
         return out_result, attention_probs_result, ModelState(model_state_result), alignment_result
 
     @property
