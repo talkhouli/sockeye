@@ -247,13 +247,13 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     :param only_first_row: If True the search is constrained to the first row of the matrix.
     :return: The row indices, column indices and values of the k smallest items in matrix.
     """
-    if only_first_row:
-        matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
+    # if only_first_row:
+    #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
 
     # pylint: disable=unbalanced-tuple-unpacking
     values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True)
-
-    return np.unravel_index(indices.astype(np.int32).asnumpy(), matrix.shape), values
+    indices = np.unravel_index(indices.astype(np.int32).asnumpy(), matrix.shape)
+    return indices, values
 
 
 def chunks(some_list: List, n: int) -> Iterable[List]:
