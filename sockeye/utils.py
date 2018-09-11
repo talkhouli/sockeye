@@ -251,8 +251,8 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
 
     # pylint: disable=unbalanced-tuple-unpacking
-    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True)
-    indices = np.unravel_index(indices.astype(np.int32).asnumpy(), matrix.shape)
+    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+    indices = np.unravel_index(indices.astype(np.int64).asnumpy(), matrix.shape)
     return indices, values
 
 
