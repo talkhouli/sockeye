@@ -779,24 +779,37 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
 
     :param translations: A list of translations (sequence starting with BOS symbol, attention_matrix), score and length.
     :param start_id: The EOS symbol.
-    :param translations: The BOS symbols.
+    :param stop_ids: The BOS symbols.
     :return: A concatenation if the translations with a score.
     """
     # Concatenation of all target ids without BOS and EOS
     target_ids = [start_id]
     attention_matrices = []
+    coverage = []
+    alignment = [-1]
+    source_ids = []
+    offset = 0
     for idx, translation in enumerate(translations):
         assert translation.target_ids[0] == start_id
+        source_ids.extend(translation.source[:])
+        coverage.extend(translation.coverage[:])
+        if idx == 0:
+            alignment.extend([translation.alignment[1]])
+
         if idx == len(translations) - 1:
             target_ids.extend(translation.target_ids[1:])
             attention_matrices.append(translation.attention_matrix[1:, :])
+            alignment.extend((offset + translation.alignment[2:len(translation.target_ids[:])]))
         else:
             if translation.target_ids[-1] in stop_ids:
                 target_ids.extend(translation.target_ids[1:-1])
                 attention_matrices.append(translation.attention_matrix[1:-1, :])
+                alignment.extend((offset + translation.alignment[2:len(translation.target_ids[:])]))
             else:
                 target_ids.extend(translation.target_ids[1:])
-                attention_matrices.append(translation.attention_matrix[1:, :])
+                alignment.extend(offset + translation.alignment[2:])
+
+        offset += len(translation.source)
 
     # Combine attention matrices:
     attention_shapes = [attention_matrix.shape for attention_matrix in attention_matrices]
@@ -815,7 +828,8 @@ def _concat_translations(translations: List[Translation], start_id: int, stop_id
     score = sum(translation.score * length_penalty(len(translation.target_ids))
                 for translation in translations)
     score = score / length_penalty(len(target_ids))
-    return Translation(target_ids, attention_matrix_combined, score)
+    return Translation(target_ids, attention_matrix_combined, score, coverage, alignment, source_ids)
+
 
 
 class Translator:
@@ -957,11 +971,15 @@ class Translator:
                 translated_chunks.append(TranslatedChunk(id=input_idx,
                                                          chunk_id=0,
                                                          translation=empty_translation))
-            elif len(trans_input.tokens) > self.max_input_length:
+            elif len(trans_input.tokens) >= self.max_input_length:
                 logger.debug(
                     "Input %d has length (%d) that exceeds max input length (%d). Splitting into chunks of size %d.",
                     trans_input.id, len(trans_input.tokens), self.buckets_source[-1], self.max_input_length)
-                token_chunks = utils.chunks(trans_input.tokens, self.max_input_length)
+                #
+                # split into chunks of size max_input_length - 1 to account for additional EOS token
+                # TODO (gabriel) verify
+                #
+                token_chunks = utils.chunks(trans_input.tokens, self.max_input_length - 1)
                 input_chunks.extend(InputChunk(input_idx, chunk_id, chunk)
                                     for chunk_id, chunk in enumerate(token_chunks))
                 if trans_input.reference_tokens:
@@ -1578,11 +1596,15 @@ class Translator:
         # coverage vectors
         coverage_vector = mx.nd.zeros((self.batch_size * self.beam_size,source_length), ctx=self.context, dtype='int32')
 
-        best_hyp_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
-        best_hyp_pos_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
-        best_word_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
-        scores_accumulated_np = np.empty((self.batch_size * self.beam_size,))
-        attention_scores_np = np.empty((self.batch_size * self.beam_size,encoded_source_length,encoded_source_length))
+        # best_hyp_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
+        best_hyp_indices_mx = mx.nd.empty((self.batch_size * self.beam_size,), dtype='int32')
+        # best_hyp_pos_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
+        best_hyp_pos_indices_mx = mx.nd.empty((self.batch_size * self.beam_size,), dtype='int32')
+        # best_word_indices_np = np.empty((self.batch_size * self.beam_size,), dtype='int32')
+        best_word_indices_mx = mx.nd.empty((self.batch_size * self.beam_size,), dtype='int32')
+        # scores_accumulated_np = np.empty((self.batch_size * self.beam_size,))
+        scores_accumulated_mx = mx.nd.empty((self.batch_size * self.beam_size,))
+        # attention_scores_np = np.empty((self.batch_size * self.beam_size,encoded_source_length,encoded_source_length))
 
         # reset all padding distribution cells to np.inf
         self.pad_dist[:] = np.inf
@@ -1649,6 +1671,7 @@ class Translator:
                                                                        coverage_vector=coverage_vector,
                                                                        last_alignment=mx.nd.expand_dims(data=last_aligned, axis=1),
                                                                        previous_jump=alignment_jump)
+            # TODO remove for performance
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
 
@@ -1681,7 +1704,7 @@ class Translator:
 
             # (3) get beam_size winning hypotheses for each sentence block separately
             # TODO(fhieber): once mx.nd.topk is sped-up no numpy conversion necessary anymore.
-            scores = scores.asnumpy()  # convert to numpy once to minimize cross-device copying
+            # scores = scores.asnumpy()  # convert to numpy once to minimize cross-device copying
             #####
             if self.dictionary:
                 self._override_scores_with_dictionary(scores,attention_scores,source,t,alignment_based)
@@ -1703,31 +1726,33 @@ class Translator:
                 sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
                 if reference is not None and len(reference)>0:
                     sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
-                k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else  sliced_scores)-1)
+                k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else sliced_scores)-1)
                 active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
                 rest_rows = slice(sent * self.beam_size + k , (sent+1) * self.beam_size)
                 # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
-                (best_hyp_indices_np[active_rows], best_hyp_pos_indices_np[active_rows] , best_word_indices_np[active_rows]), \
-                    scores_accumulated_np[active_rows] = utils.smallest_k(sliced_scores, k, t == 1)
+                (best_hyp_indices_mx[active_rows], best_hyp_pos_indices_mx[active_rows] , best_word_indices_mx[active_rows]), \
+                    scores_accumulated_mx[active_rows] = utils.smallest_k_mx(sliced_scores, k, t == 1) #
                 #replicate to fill the rest of the beam in case of not enough hypotheses
-                best_hyp_indices_np[rest_rows], best_hyp_pos_indices_np[rest_rows], best_word_indices_np[rest_rows], \
-                        scores_accumulated_np[rest_rows] = best_hyp_indices_np[active_rows][0], \
-                                                           best_hyp_pos_indices_np[active_rows][0], \
-                                                           best_word_indices_np[active_rows][0], \
-                                                           scores_accumulated_np[active_rows][0]
+                if rest_rows.stop - rest_rows.start > 0:
+                    best_hyp_indices_mx[rest_rows], best_hyp_pos_indices_mx[rest_rows], best_word_indices_mx[rest_rows], \
+                            scores_accumulated_mx[rest_rows] = best_hyp_indices_mx[active_rows][0], \
+                                                               best_hyp_pos_indices_mx[active_rows][0], \
+                                                               best_word_indices_mx[active_rows][0], \
+                                                               scores_accumulated_mx[active_rows][0]
 
                 # offsetting since the returned smallest_k() indices were slice-relative
-                best_hyp_indices_np[rows] += rows.start
+                best_hyp_indices_mx[rows] += rows.start
                 if reference is not None and len(reference) > 0:
-                    best_word_indices_np[rows] = reference[sent, t - 1].astype("int32").asnumpy()
+                    best_word_indices_mx[rows] = reference[sent, t - 1].astype("int32")
 
             # convert back to mx.ndarray again
-            best_hyp_indices[:] = best_hyp_indices_np
+            best_hyp_indices[:] = best_hyp_indices_mx
             offset = align_idx_offset(t)
-            best_hyp_pos_indices[:] = best_hyp_pos_indices_np + offset - (1 if self.use_unaligned else 0)
-            best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_np
-            best_word_indices[:] = best_word_indices_np
-            scores_accumulated[:] = np.expand_dims(np.expand_dims(scores_accumulated_np, axis=1),axis=1)
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_mx + offset - (1 if self.use_unaligned else 0)
+            best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_mx
+
+            best_word_indices[:] = best_word_indices_mx
+            scores_accumulated[:] = mx.nd.expand_dims(mx.nd.expand_dims(scores_accumulated_mx, axis=1),axis=1)
             # Map from restricted to full vocab ids if needed
             if self.restrict_lexicon:
                 best_word_indices[:] = vocab_slice_ids.take(best_word_indices)
@@ -1737,13 +1762,13 @@ class Translator:
             lengths = mx.nd.take(lengths, best_hyp_indices)
             finished = mx.nd.take(finished, best_hyp_indices)
             #attention_scores = mx.nd.take(attention_scores, best_hyp_indices)
-            attention_scores_np = attention_scores.asnumpy()
+            # attention_scores_np = attention_scores.asnumpy()
             attentions = mx.nd.take(attentions, best_hyp_indices)
 
             # (5) update best hypotheses, their attention lists and lengths (only for non-finished hyps)
             # pylint: disable=unsupported-assignment-operation
             sequences[:, t] = best_word_indices
-            attentions[:, t, :] = attention_scores_np[best_hyp_indices_np,best_hyp_pos_indices_np,:]
+            attentions[:, t, :] = attention_scores[best_hyp_indices,best_hyp_pos_idx_indices,:]
             #attentions[:, t, :] = attention_scores
             lengths += mx.nd.cast(1 - mx.nd.expand_dims(finished, axis=1), dtype='float32')
 

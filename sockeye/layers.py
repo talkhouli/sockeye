@@ -563,7 +563,11 @@ class Alignment:
                                         bias=self.b_a2h,
                                         num_hidden=self.num_hidden,
                                         flatten=False)
-        context = mx.sym.where(self.alignment_assisted > self.align_assisted_prob, context, mx.sym.zeros_like(context))
+        condition = mx.sym.broadcast_add(self.alignment_assisted > self.align_assisted_prob, mx.sym.zeros_like(context))
+        context = mx.sym.where(condition,
+                               context,
+                               mx.sym.zeros_like(context),
+                               name="%smultihead_where" % self.prefix)
         context = mx.sym.Custom(op_type="InferenceScale", data=context, scalar=self.alignment_assisted)
         attention_scores = mx.sym.swapaxes(attention_scores, 1, 2)
         attention_scores = mx.sym.reshape(attention_scores, shape=(0, 0, 1, -1))

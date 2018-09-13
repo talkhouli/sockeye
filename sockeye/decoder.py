@@ -402,7 +402,7 @@ class TransformerDecoder(Decoder):
             # len(self.layers) * 2 cache items
             cache = mx.sym.split(cache, num_outputs=len(self.layers) * 2, axis=1, squeeze_axis=False)
 
-        if not cache:  # first decoder step
+        if cache is None:  # first decoder step
             return [{'k': None, 'v': None} for _ in range(len(self.layers))]
         else:
             layer_caches = []  # type: List[Dict[str, Optional[mx.sym.Symbol]]]
