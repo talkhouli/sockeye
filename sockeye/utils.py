@@ -238,6 +238,8 @@ def smallest_k(matrix: np.ndarray, k: int,
 
 
 def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
+                  batch_size: int,
+                  offset: mx.nd.NDArray,
                   only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
     """
     Find the smallest elements in a NDarray.
@@ -249,11 +251,17 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     """
     # if only_first_row:
     #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
-
+    folded_shape = (batch_size,-1)
+    #folded_shape = (batch_size, k*matrix.shape[1]*matrix.shape[2]) if not only_first_row else (batch_size, matrix.shape[1]*matrix.shape[2])
+    folded_matrix = matrix.reshape(folded_shape)
     # pylint: disable=unbalanced-tuple-unpacking
-    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
-    indices = np.unravel_index(indices.astype(np.int64).asnumpy(), matrix.shape)
-    return indices, values
+    values, indices = mx.nd.topk(folded_matrix, axis=1, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+    best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(np.unravel_index(indices.astype(np.int32).asnumpy().ravel(), matrix.shape),
+                          dtype='int32',
+                          ctx=matrix.context)
+    if batch_size > 1:
+        best_hyp_indices += offset
+    return (best_hyp_indices, best_hyp_pos_indices, best_word_indices), values.reshape(-1)
 
 
 def chunks(some_list: List, n: int) -> Iterable[List]:

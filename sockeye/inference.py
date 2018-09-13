@@ -879,6 +879,11 @@ class Translator:
             self.buckets_source = [self.max_input_length]
         self.pad_dist = mx.nd.full((self.batch_size * self.beam_size, len(self.vocab_target)), val=np.inf,
                                    ctx=self.context)
+
+        # offset for hypothesis indices in batch decoding
+        self.offset = mx.nd.array(
+            np.repeat(np.arange(0, self.batch_size * self.beam_size, self.beam_size), self.beam_size),
+            dtype='int32', ctx=self.context)
         logger.info("Translator (%d model(s) beam_size=%d ensemble_mode=%s batch_size=%d "
                     "buckets_source=%s)",
                     len(self.models),
@@ -1043,8 +1048,7 @@ class Translator:
         reference = mx.nd.zeros((len(reference_sequences), max_reference_length)) if reference_sequences else []
         source_length = []
         for j, (tokens, reference_tokens) in enumerate(itertools.zip_longest(sequences,reference_sequences)):
-            ids = data_io.tokens2ids(tokens,
-                    self.vocab_source, has_categ_content=True)
+            ids = data_io.tokens2ids(tokens, self.vocab_source, has_categ_content=True)
             reference_ids = data_io.tokens2ids(reference_tokens,
                                      self.vocab_target, has_categ_content=True) if reference_tokens else []
             for i, wid in enumerate(ids):
@@ -1624,37 +1628,47 @@ class Translator:
             #score_wish[:] = scores[:,9,306]
             #scores[:,9,:] = np.inf
             #scores[:, 9, 306] = score_wish
-            for sent in range(self.batch_size):
-                rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
-                if alignment_based:
-                    active_positions = slice(0, min(
-                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
-                        max(actual_source_length)
-                    ))
-                else:
-                    active_positions = slice(0, 1)
+            active_positions = self._active_positions(actual_source_length, alignment_based, t)
+            sliced_scores = scores[:, active_positions, :]
+            if reference is not None and len(reference) > 0:
+                # TODO remove this loop?
+                for sent in range(self.batch_size):
+                    rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
+                    sliced_scores[rows] = sliced_scores[rows, :, reference[sent, t - 1].astype("int32")]
 
-                sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
-                if reference is not None and len(reference)>0:
-                    sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
-                k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else sliced_scores)-1)
-                active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
-                rest_rows = slice(sent * self.beam_size + k , (sent+1) * self.beam_size)
-                # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
-                (best_hyp_indices_mx[active_rows], best_hyp_pos_indices_mx[active_rows] , best_word_indices_mx[active_rows]), \
-                    scores_accumulated_mx[active_rows] = utils.smallest_k_mx(sliced_scores, k, t == 1) #
-                #replicate to fill the rest of the beam in case of not enough hypotheses
-                if rest_rows.stop - rest_rows.start > 0:
-                    best_hyp_indices_mx[rest_rows], best_hyp_pos_indices_mx[rest_rows], best_word_indices_mx[rest_rows], \
-                            scores_accumulated_mx[rest_rows] = best_hyp_indices_mx[active_rows][0], \
-                                                               best_hyp_pos_indices_mx[active_rows][0], \
-                                                               best_word_indices_mx[active_rows][0], \
-                                                               scores_accumulated_mx[active_rows][0]
+            k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else sliced_scores) - 1)
+            (best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx), \
+            scores_accumulated_mx = utils.smallest_k_mx(sliced_scores, k, self.batch_size, self.offset, t == 1)  #
 
-                # offsetting since the returned smallest_k() indices were slice-relative
-                best_hyp_indices_mx[rows] += rows.start
-                if reference is not None and len(reference) > 0:
-                    best_word_indices_mx[rows] = reference[sent, t - 1].astype("int32")
+            if reference is not None and len(reference) > 0:
+                # TODO remove this loop?
+                for sent in range(self.batch_size):
+                    rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
+                    best_word_indices_mx[rows] = reference[sent, t-1].astype("int32")
+
+            # for sent in range(self.batch_size):
+            #     rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
+            #     sliced_scores = scores[:, active_positions, :] if t == 1 and self.batch_size == 1 else scores[rows, active_positions, :]
+            #     if reference is not None and len(reference)>0:
+            #         sliced_scores = sliced_scores[:, :, reference[sent, t - 1].astype("int32").asnumpy()]
+            #     k = min(self.beam_size,np.size(sliced_scores[:1] if t==1 else sliced_scores)-1)
+            #     active_rows = slice(sent * self.beam_size, sent * self.beam_size + k)
+            #     rest_rows = slice(sent * self.beam_size + k , (sent+1) * self.beam_size)
+            #     # TODO we could save some tiny amount of time here by not running smallest_k for a finished sent
+            #     (best_hyp_indices_mx[active_rows], best_hyp_pos_indices_mx[active_rows] , best_word_indices_mx[active_rows]), \
+            #         scores_accumulated_mx[active_rows] = utils.smallest_k_mx(sliced_scores, k, self.batch_size, t == 1) #
+            #     #replicate to fill the rest of the beam in case of not enough hypotheses
+            #     if rest_rows.stop - rest_rows.start > 0:
+            #         best_hyp_indices_mx[rest_rows], best_hyp_pos_indices_mx[rest_rows], best_word_indices_mx[rest_rows], \
+            #                 scores_accumulated_mx[rest_rows] = best_hyp_indices_mx[active_rows][0], \
+            #                                                    best_hyp_pos_indices_mx[active_rows][0], \
+            #                                                    best_word_indices_mx[active_rows][0], \
+            #                                                    scores_accumulated_mx[active_rows][0]
+            #
+            #     # offsetting since the returned smallest_k() indices were slice-relative
+            #     best_hyp_indices_mx[rows] += rows.start
+            #     if reference is not None and len(reference) > 0:
+            #         best_word_indices_mx[rows] = reference[sent, t - 1].astype("int32")
 
             # convert back to mx.ndarray again
             best_hyp_indices[:] = best_hyp_indices_mx
@@ -1716,6 +1730,16 @@ class Translator:
 
 
         return sequences, attentions, scores_accumulated[:,:,0], lengths, coverage_vector, alignment
+
+    def _active_positions(self, actual_source_length, alignment_based, t):
+        if alignment_based:
+            active_positions = slice(0, min(
+                min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                max(actual_source_length)
+            ))
+        else:
+            active_positions = slice(0, 1)
+        return active_positions
 
     def _get_best_from_beam(self,
                             sequences: mx.nd.NDArray,
