@@ -238,6 +238,26 @@ def smallest_k(matrix: np.ndarray, k: int,
 
 
 def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
+                  only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+    """
+    Find the smallest elements in a NDarray.
+
+    :param matrix: Any matrix.
+    :param k: The number of smallest elements to return.
+    :param only_first_row: If True the search is constrained to the first row of the matrix.
+    :return: The row indices, column indices and values of the k smallest items in matrix.
+    """
+
+    # if only_first_row:
+    #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
+
+    # pylint: disable=unbalanced-tuple-unpacking
+    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+    indices = np.unravel_index(indices.astype(np.int64).asnumpy(), matrix.shape)
+    return indices, values
+
+
+def smallest_k_mx_batched(matrix: mx.nd.NDArray, k: int,
                   batch_size: int,
                   offset: mx.nd.NDArray,
                   only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
@@ -249,6 +269,7 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     :param only_first_row: If True the search is constrained to the first row of the matrix.
     :return: The row indices, column indices and values of the k smallest items in matrix.
     """
+
     # if only_first_row:
     #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
     folded_shape = (batch_size,-1)
@@ -261,6 +282,8 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
                           ctx=matrix.context)
     if batch_size > 1:
         best_hyp_indices += offset
+
+    assert(mx.nd.nansum(values.reshape(-1) - matrix[best_hyp_indices, best_hyp_pos_indices, best_word_indices]) == 0)
     return (best_hyp_indices, best_hyp_pos_indices, best_word_indices), values.reshape(-1)
 
 
