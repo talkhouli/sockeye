@@ -1703,7 +1703,9 @@ class Translator:
         active_positions = self._active_positions(actual_source_length, alignment_based, t)
         sliced_scores = scores[:, active_positions, :]
         if reference is not None and len(reference) > 0:
-            sliced_scores = sliced_scores[:, :, reference[:, t - 1].astype("int32")]
+            batch_select = mx.nd.arange(0, self.batch_size*self.beam_size, ctx=self.context)
+            word_select = mx.nd.array(mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size), ctx=self.context)
+            sliced_scores = sliced_scores[batch_select, :, word_select].expand_dims(axis=-1)
 
         k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else sliced_scores) - 1)
         if k != self.beam_size:
@@ -1712,7 +1714,7 @@ class Translator:
         scores_accumulated_mx = utils.smallest_k_mx_batched(sliced_scores, k, self.batch_size, self.offset, t == 1)  #
 
         if reference is not None and len(reference) > 0:
-            best_word_indices_mx = mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size)
+            best_word_indices_mx = word_select
 
         #assert(mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
         return best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx, scores_accumulated_mx
