@@ -1590,10 +1590,19 @@ class Translator:
             scores = mx.ndarray.swapaxes(scores,0,1)
             attention_scores = mx.ndarray.swapaxes(attention_scores,0,1)
 
+            if alignment_based:
+                active_positions = slice(0, min(
+                    min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
+                    max(actual_source_length)
+                ))
+                logger.info("active posititions %s, actual source lengths %s, target position %d" % (
+                active_positions, actual_source_length, t))
+            else:
+                active_positions = slice(0, 1)
 
             # (2) compute length-normalized accumulated scores in place
             if t == 1 and self.batch_size == 1:  # only one hypothesis at t==1
-                scores = scores[:1] / self.length_penalty(lengths[:1])
+                scores = scores[:1, active_positions] / self.length_penalty(lengths[:1])
             else:
                 # renormalize scores by length ...
                 scores = (scores + scores_accumulated * mx.nd.expand_dims(self.length_penalty(lengths - 1),axis=1)) / mx.nd.expand_dims(self.length_penalty(lengths),axis=1)
@@ -1604,14 +1613,6 @@ class Translator:
                 # this is equivalent to doing this in numpy:
                 #   pad_dist[finished, :] = np.inf
                 #   pad_dist[finished, C.PAD_ID] = scores_accumulated[finished]
-                if alignment_based:
-                    active_positions = slice(0, min(
-                        min(C.MAX_JUMP, max(actual_source_length) - t) + min(C.MAX_JUMP, t - 1) + 1,
-                        max(actual_source_length)
-                    ))
-                    logger.info("active posititions %s, actual source lengths %s, targent position %d" % (active_positions, actual_source_length, t))
-                else:
-                    active_positions = slice(0,1)
 
                 if active_positions == slice(0,0):
                     break
@@ -1628,16 +1629,27 @@ class Translator:
             #score_wish[:] = scores[:,9,306]
             #scores[:,9,:] = np.inf
             #scores[:, 9, 306] = score_wish
-            best_hyp_indices, best_hyp_pos_idx_indices, best_word_indices, scores_accumulated_mx = self.topk(
+
+
+            best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx, scores_accumulated_mx = self.topk(
                 actual_source_length,
                 alignment_based,
                 reference,
                 scores,
                 t)
 
-            offset = align_idx_offset(t)
-            best_hyp_pos_indices[:] = best_hyp_pos_idx_indices + offset - (1 if self.use_unaligned else 0)
-            scores_accumulated[:] = mx.nd.expand_dims(mx.nd.expand_dims(scores_accumulated_mx, axis=1), axis=1)
+            # best_hyp, best_pos, best_word, best_scores = self.topk(
+            #     actual_source_length,
+            #     alignment_based,
+            #     reference,
+            #     scores,
+            #     t)
+
+            # deb_active_positions = self._active_positions(actual_source_length, alignment_based, t)
+            # deb_sliced_scores = scores[:, deb_active_positions, :]
+            # if reference is not None and len(reference) > 0:
+            #     deb_sliced_scores = deb_sliced_scores[:, :, reference[:, t - 1].astype("int32")]
+            #
             # for sent in range(self.batch_size):
             #     rows = slice(sent * self.beam_size, (sent + 1) * self.beam_size)
             #     active_positions = self._active_positions(actual_source_length, alignment_based, t)
@@ -1666,8 +1678,8 @@ class Translator:
             #     best_hyp_indices_mx[rows] += rows.start
             #     if reference is not None and len(reference) > 0:
             #         best_word_indices_mx[rows] = reference[sent, t - 1].astype("int32")
-            #
-            #
+
+
             # assert (mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
             #
             # if not (mx.nd.nansum(best_hyp_indices_mx - best_hyp) == 0) \
@@ -1678,15 +1690,16 @@ class Translator:
             #     print(best_hyp_pos_indices_mx, best_pos)
             #     print(best_word_indices_mx, best_word)
             #     print(scores_accumulated_mx, best_scores)
-            # convert back to mx.ndarray again
+            #     assert(False)
 
-            # best_hyp_indices[:] = best_hyp_indices_mx
-            # offset = align_idx_offset(t)
-            # best_hyp_pos_indices[:] = best_hyp_pos_indices_mx + offset - (1 if self.use_unaligned else 0)
-            # best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_mx
-            #
-            # best_word_indices[:] = best_word_indices_mx
-            # scores_accumulated[:] = mx.nd.expand_dims(mx.nd.expand_dims(scores_accumulated_mx, axis=1),axis=1)
+            # convert back to mx.ndarray again
+            best_hyp_indices[:] = best_hyp_indices_mx
+            offset = align_idx_offset(t)
+            best_hyp_pos_indices[:] = best_hyp_pos_indices_mx + offset - (1 if self.use_unaligned else 0)
+            best_hyp_pos_idx_indices[:] = best_hyp_pos_indices_mx
+
+            best_word_indices[:] = best_word_indices_mx
+            scores_accumulated[:] = mx.nd.expand_dims(mx.nd.expand_dims(scores_accumulated_mx, axis=1),axis=1)
             # Map from restricted to full vocab ids if needed
             if self.restrict_lexicon:
                 best_word_indices[:] = vocab_slice_ids.take(best_word_indices)
@@ -1744,7 +1757,6 @@ class Translator:
         active_positions = self._active_positions(actual_source_length, alignment_based, t)
         sliced_scores = scores[:, active_positions, :]
         if reference is not None and len(reference) > 0:
-            assert(False) # selects references for all batches
             sliced_scores = sliced_scores[:, :, reference[:, t - 1].astype("int32")]
 
         k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else sliced_scores) - 1)
@@ -1756,7 +1768,7 @@ class Translator:
         if reference is not None and len(reference) > 0:
             best_word_indices_mx = mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size)
 
-        assert(mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
+        #assert(mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
         return best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx, scores_accumulated_mx
 
     def _active_positions(self, actual_source_length, alignment_based, t):
