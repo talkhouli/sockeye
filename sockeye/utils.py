@@ -260,10 +260,11 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     return indices, values
 
 
-def smallest_k_mx_batched(matrix: mx.nd.NDArray, k: int,
-                  batch_size: int,
-                  offset: mx.nd.NDArray,
-                  only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+def smallest_k_mx_batched(matrix: mx.nd.NDArray,
+                          k: int,
+                          batch_size: int,
+                          offset: mx.nd.NDArray,
+                          only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
     """
     Find the smallest elements in a NDarray.
 

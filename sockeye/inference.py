@@ -880,10 +880,6 @@ class Translator:
         self.pad_dist = mx.nd.full((self.batch_size * self.beam_size, len(self.vocab_target)), val=np.inf,
                                    ctx=self.context)
 
-        # offset for hypothesis indices in batch decoding
-        self.offset = mx.nd.array(
-            np.repeat(np.arange(0, self.batch_size * self.beam_size, self.beam_size), self.beam_size),
-            dtype='int32', ctx=self.context)
         logger.info("Translator (%d model(s) beam_size=%d ensemble_mode=%s batch_size=%d "
                     "buckets_source=%s)",
                     len(self.models),
@@ -957,7 +953,9 @@ class Translator:
                 empty_translation = Translation(target_ids=[],
                                                 attention_matrix=np.asarray([[0]]),
                                                 score=-np.inf,
-                                                coverage=np.asarray([]))
+                                                coverage=np.asarray([]),
+                                                source=[],
+                                                alignment=np.asarray([-1]))
                 translated_chunks.append(TranslatedChunk(id=input_idx,
                                                          chunk_id=0,
                                                          translation=empty_translation))
@@ -1708,16 +1706,48 @@ class Translator:
             sliced_scores = sliced_scores[batch_select, :, word_select].expand_dims(axis=-1)
 
         k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else sliced_scores) - 1)
-        if k != self.beam_size:
-            logger.error("beam size %d topk %d" % (self.beam_size, k))
+
+        offset = mx.nd.array(
+            np.repeat(np.arange(0, self.batch_size * self.beam_size, self.beam_size), k),
+            dtype='int32', ctx=self.context)
         (best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx), \
-        scores_accumulated_mx = utils.smallest_k_mx_batched(sliced_scores, k, self.batch_size, self.offset, t == 1)  #
+        scores_accumulated_mx = utils.smallest_k_mx_batched(
+            matrix=sliced_scores,
+            k=k,
+            batch_size=self.batch_size,
+            offset=offset,
+            only_first_row=t == 1)  #
+
+        if k != self.beam_size:
+            best_hyp_indices_mx = self._pad_with_first_value(
+                array=best_hyp_indices_mx,
+                batch_size=self.batch_size,
+                padding_length=(self.beam_size -k))
+            best_hyp_pos_indices_mx = self._pad_with_first_value(
+                array=best_hyp_pos_indices_mx,
+                batch_size=self.batch_size,
+                padding_length=(self.beam_size - k))
+            best_word_indices_mx = self._pad_with_first_value(
+                array=best_word_indices_mx,
+                batch_size=self.batch_size,
+                padding_length=(self.beam_size - k))
+            scores_accumulated_mx = self._pad_with_first_value(
+                array=scores_accumulated_mx,
+                batch_size=self.batch_size,
+                padding_length=(self.beam_size - k))
 
         if reference is not None and len(reference) > 0:
             best_word_indices_mx = word_select
 
         #assert(mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
         return best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx, scores_accumulated_mx
+
+    def _pad_with_first_value(self, array, batch_size, padding_length):
+        array = array.reshape(batch_size, -1)
+        padding = array[:, 0].expand_dims(axis=1)
+        padding = mx.nd.repeat(padding, repeats=padding_length, axis=1)
+        array = mx.nd.concat(array, padding).reshape(-1)
+        return array
 
     def _active_positions(self, actual_source_length, alignment_based, t):
         if alignment_based:
