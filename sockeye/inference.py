@@ -1701,15 +1701,21 @@ class Translator:
         active_positions = self._active_positions(actual_source_length, alignment_based, t)
         sliced_scores = scores[:, active_positions, :]
         if reference is not None and len(reference) > 0:
-            batch_select = mx.nd.arange(0, self.batch_size*self.beam_size, ctx=self.context)
-            word_select = mx.nd.array(mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size), ctx=self.context)
+            if t == 1 and self.batch_size == 1:
+                batch_select = 0
+                word_select = mx.nd.array(reference[:, t - 1].astype("int32"), dtype="int32", ctx=self.context)
+            else:
+                batch_select = mx.nd.arange(0, self.batch_size*self.beam_size, ctx=self.context)
+                word_select = mx.nd.array(mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size), ctx=self.context)
+
             sliced_scores = sliced_scores[batch_select, :, word_select].expand_dims(axis=-1)
 
-        k = min(self.beam_size, np.size(sliced_scores[:1] if t == 1 else sliced_scores) - 1)
+        k = self._effective_beam_size(sliced_scores, t)
 
         offset = mx.nd.array(
             np.repeat(np.arange(0, self.batch_size * self.beam_size, self.beam_size), k),
             dtype='int32', ctx=self.context)
+
         (best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx), \
         scores_accumulated_mx = utils.smallest_k_mx_batched(
             matrix=sliced_scores,
@@ -1737,10 +1743,17 @@ class Translator:
                 padding_length=(self.beam_size - k))
 
         if reference is not None and len(reference) > 0:
-            best_word_indices_mx = word_select
+            best_word_indices_mx = mx.nd.array(mx.nd.repeat(reference[:, t - 1].astype("int32"), self.beam_size),
+                                      ctx=self.context)
 
         #assert(mx.nd.nansum(scores_accumulated_mx - scores[best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx]) == 0)
         return best_hyp_indices_mx, best_hyp_pos_indices_mx, best_word_indices_mx, scores_accumulated_mx
+
+    def _effective_beam_size(self, sliced_scores, t):
+        sliced_score_shape = sliced_scores.reshape((-4, self.batch_size, -1, 0, 0)).shape
+        k = (sliced_score_shape[-1] * sliced_score_shape[-2] * 1 if t == 1 else sliced_score_shape[-3])
+        k = min(self.beam_size, k)
+        return k
 
     def _pad_with_first_value(self, array, batch_size, padding_length):
         array = array.reshape(batch_size, -1)
