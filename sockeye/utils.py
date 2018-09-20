@@ -247,13 +247,50 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     :param only_first_row: If True the search is constrained to the first row of the matrix.
     :return: The row indices, column indices and values of the k smallest items in matrix.
     """
-    # if only_first_row:
-    #     matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
 
+    if only_first_row:
+        folded_matrix = mx.nd.reshape(matrix[0], shape=(-1))
+    else:
+        folded_matrix = matrix.reshape(-1)
     # pylint: disable=unbalanced-tuple-unpacking
-    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
-    indices = np.unravel_index(indices.astype(np.int64).asnumpy(), matrix.shape)
+    values, indices = mx.nd.topk(folded_matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+
+    indices = np.unravel_index(indices.reshape(-1).astype(np.int64).asnumpy(), matrix.shape)
+    logger.info(indices)
     return indices, values
+
+
+def smallest_k_mx_batched(matrix: mx.nd.NDArray,
+                          k: int,
+                          batch_size: int,
+                          offset: mx.nd.NDArray,
+                          only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+    """
+    Find the smallest elements in a NDarray.
+
+    :param matrix: Any matrix.
+    :param k: The number of smallest elements to return.
+    :param only_first_row: If True the search is constrained to the first row of the matrix.
+    :return: The row indices, column indices and values of the k smallest items in matrix.
+    """
+
+    if only_first_row:
+        folded_matrix = matrix.reshape((-4, batch_size, -1, 0, 0))
+        folded_matrix = folded_matrix[:, 0, :, :]
+    else:
+        folded_matrix = matrix
+
+    folded_matrix = folded_matrix.reshape((batch_size,-1))
+    # pylint: disable=unbalanced-tuple-unpacking
+    values, indices = mx.nd.topk(folded_matrix, axis=1, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+    best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(np.unravel_index(indices.astype(np.int32).asnumpy().ravel(), matrix.shape),
+                          dtype='int32',
+                          ctx=matrix.context)
+    if batch_size > 1:
+        best_hyp_indices += offset
+
+#    assert(mx.nd.nansum(values.reshape(-1) - matrix[best_hyp_indices, best_hyp_pos_indices, best_word_indices]) == 0)
+    return (best_hyp_indices, best_hyp_pos_indices, best_word_indices), values.reshape(-1)
 
 
 def chunks(some_list: List, n: int) -> Iterable[List]:
