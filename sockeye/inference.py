@@ -986,7 +986,12 @@ class Translator:
                 input_chunks.extend(InputChunk(input_idx, chunk_id, chunk)
                                     for chunk_id, chunk in enumerate(token_chunks))
                 if trans_input.reference_tokens:
-                    reference_chunks.append(ReferenceChunk(input_idx, 0, trans_input.reference_tokens))
+                    # TODO (gabriel) split reference token to the same length as input string
+                    # this splitting is kind of arbitrary as it assumes a one-to-one alignment
+                    ref_token_chunks = utils.chunks(trans_input.reference_tokens, self.max_input_length - 1)
+                    reference_chunks.extend(ReferenceChunk(input_idx, chunk_id, chunk)
+                                    for chunk_id, chunk in enumerate(ref_token_chunks))
+
             else:
                 input_chunks.append(InputChunk(input_idx, 0, trans_input.tokens))
                 if trans_input.reference_tokens:
