@@ -35,6 +35,7 @@ import numpy as np
 import constants as C
 from sockeye import __version__
 from log import log_sockeye_version, log_mxnet_version
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,24 @@ def chunks(some_list: List, n: int) -> Iterable[List]:
     for i in range(0, len(some_list), n):
         yield some_list[i:i + n]
 
+
+def smart_open(filename: str, mode: str = "rt", ftype: str = "auto", errors: str = 'replace'):
+    """
+    Returns a file descriptor for filename with UTF-8 encoding.
+    If mode is "rt", file is opened read-only.
+    If ftype is "auto", uses gzip iff filename endswith .gz.
+    If ftype is {"gzip","gz"}, uses gzip.
+    Note: encoding error handling defaults to "replace"
+    :param filename: The filename to open.
+    :param mode: Reader mode.
+    :param ftype: File type. If 'auto' checks filename suffix for gz to try gzip.open
+    :param errors: Encoding error handling during reading. Defaults to 'replace'
+    :return: File descriptor
+    """
+    if ftype == 'gzip' or ftype == 'gz' or (ftype == 'auto' and filename.endswith(".gz")):
+        return gzip.open(filename, mode=mode, encoding='utf-8', errors=errors)
+    else:
+        return open(filename, mode=mode, encoding='utf-8', errors=errors)
 
 def plot_attention(attention_matrix: np.ndarray, source_tokens: List[str], target_tokens: List[str], filename: str):
     """
