@@ -169,6 +169,9 @@ class JointOutputHandler(StringOutputHandler):
         :param t_output: Translator output.
         :param t_walltime: Total wall-clock time for translation.
         """
+        if len(t_output.tokens) == 0:
+            return
+
         alignments = " ".join(
             ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
         self.stream.write("%s # %s # alignment %s\n" % (t_input.sentence, t_output.translation, alignments.strip()))

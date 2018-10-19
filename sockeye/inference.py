@@ -962,6 +962,15 @@ class Translator:
                         "Reference %d has length (%d) that cant be aligned with input length (%d). "
                         "Removing sentence from corpus",
                         trans_input.id, len(trans_input.reference_tokens), len(trans_input.tokens))
+                    empty_translation = Translation(target_ids=[],
+                                                    attention_matrix=np.asarray([[0]]),
+                                                    score=-np.inf,
+                                                    coverage=np.asarray([]),
+                                                    source=[],
+                                                    alignment=np.asarray([-1]))
+                    translated_chunks.append(TranslatedChunk(id=input_idx,
+                                                             chunk_id=0,
+                                                             translation=empty_translation))
                     continue
 
             if len(trans_input.tokens) == 0:
