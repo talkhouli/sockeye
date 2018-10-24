@@ -761,7 +761,9 @@ class MlpAttention(Attention):
                 seq_align_bias = mx.sym.broadcast_mul(rhs=self.att_align_bias, lhs=alignment_one_hot)
                 #self.debug_alignment_one_hot[self.debug_cnt] = seq_align_bias
                 #self.debug_cnt +=1
-                attention_hidden = mx.sym.where(self.alignment_bias > self.align_bias_prob, seq_align_bias + attention_hidden, attention_hidden)
+                condition = mx.sym.broadcast_add(self.alignment_bias > self.align_bias_prob,
+                                                 mx.sym.zeros_like(attention_hidden))
+                attention_hidden = mx.sym.where(condition, seq_align_bias + attention_hidden, attention_hidden)
                 #self.debug_attention_hidden_after_bias[self.debug_cnt] = attention_hidden
 
             if self._ln is not None:
