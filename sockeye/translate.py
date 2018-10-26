@@ -63,42 +63,42 @@ def main():
 
     with ExitStack() as exit_stack:
         context = _setup_context(args, exit_stack)
-
-        models, vocab_source, vocab_target = inference.load_models(
-            context,
-            args.max_input_len,
-            args.beam_size,
-            args.batch_size,
-            args.models,
-            args.checkpoints,
-            args.softmax_temperature,
-            args.max_output_length_num_stds,
-            decoder_return_logit_inputs=args.restrict_lexicon is not None,
-            cache_output_layer_w_b=args.restrict_lexicon is not None,
-            vis_target_enc_attention_layer=args.vis_target_enc_attention_layer)
-        restrict_lexicon = None # type: TopKLexicon
-        if args.restrict_lexicon:
-            restrict_lexicon = TopKLexicon(vocab_source, vocab_target)
-            restrict_lexicon.load(args.restrict_lexicon)
-        translator = inference.Translator(context,
-                                                  args.ensemble_mode,
-                                                  args.bucket_width,
-                                                  inference.LengthPenalty(args.length_penalty_alpha,
-                                                                                  args.length_penalty_beta),
-                                                  models,
-                                                  vocab_source,
-                                                  vocab_target,
-                                          restrict_lexicon,
-                                          lex_weight=args.lex_weight,
-                                          align_weight=args.align_weight,
-                                          align_skip_threshold=args.align_threshold,
-                                          align_k_best=args.align_beam_size
-                                          )
-        translator.dictionary = data_io.read_dictionary(args.dictionary) if args.dictionary else None
-        translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
-        if translator.dictionary_override_with_max_attention:
-            utils.check_condition(args.batch_size==1, "batching not supported with dictionary override yet")
-        read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
+        with context:
+            models, vocab_source, vocab_target = inference.load_models(
+                context,
+                args.max_input_len,
+                args.beam_size,
+                args.batch_size,
+                args.models,
+                args.checkpoints,
+                args.softmax_temperature,
+                args.max_output_length_num_stds,
+                decoder_return_logit_inputs=args.restrict_lexicon is not None,
+                cache_output_layer_w_b=args.restrict_lexicon is not None,
+                vis_target_enc_attention_layer=args.vis_target_enc_attention_layer)
+            restrict_lexicon = None # type: TopKLexicon
+            if args.restrict_lexicon:
+                restrict_lexicon = TopKLexicon(vocab_source, vocab_target)
+                restrict_lexicon.load(args.restrict_lexicon)
+            translator = inference.Translator(context,
+                                                      args.ensemble_mode,
+                                                      args.bucket_width,
+                                                      inference.LengthPenalty(args.length_penalty_alpha,
+                                                                                      args.length_penalty_beta),
+                                                      models,
+                                                      vocab_source,
+                                                      vocab_target,
+                                              restrict_lexicon,
+                                              lex_weight=args.lex_weight,
+                                              align_weight=args.align_weight,
+                                              align_skip_threshold=args.align_threshold,
+                                              align_k_best=args.align_beam_size
+                                              )
+            translator.dictionary = data_io.read_dictionary(args.dictionary) if args.dictionary else None
+            translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
+            if translator.dictionary_override_with_max_attention:
+                utils.check_condition(args.batch_size==1, "batching not supported with dictionary override yet")
+            read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,
                        chunk_size: Optional[int], source: Optional[str] = None,

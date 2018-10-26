@@ -730,8 +730,9 @@ class ModelState:
         pos_indices =  np.array([0]) if self.states[0].shape[0] == 1 or best_hyp_pos_idx_indices is None \
                                      else   best_hyp_pos_idx_indices.asnumpy()
         for idx,state in enumerate(self.states):
-            state_np = state.asnumpy()
-            self.states[idx] = mx.nd.array(state_np[pos_indices, best_hyp_indices.asnumpy()], state.context)
+            #state_np = state.asnumpy()
+            #self.states[idx] = mx.nd.array(state_np[pos_indices, best_hyp_indices.asnumpy()], state.context)
+            self.states[idx] = mx.nd.array(state[pos_indices, best_hyp_indices], state.context)
         #self.states = [mx.nd.take(ds, best_hyp_indices) for ds in self.states]
 
 
@@ -1738,6 +1739,7 @@ class Translator:
                 reference,
                 scores,
                 t)
+
 
             #best_hyp_indices[:] = best_hyp_indices_mx
             offset = align_idx_offset(t)

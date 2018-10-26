@@ -284,7 +284,10 @@ def smallest_k_mx_batched(matrix: mx.nd.NDArray,
     folded_matrix = folded_matrix.reshape((batch_size,-1))
     # pylint: disable=unbalanced-tuple-unpacking
     values, indices = mx.nd.topk(folded_matrix, axis=1, k=k, ret_typ='both', is_ascend=True, dtype="int32")
-    best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(np.unravel_index(indices.astype(np.int32).asnumpy().ravel(), matrix.shape),
+    # best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(np.unravel_index(indices.astype(np.int32).asnumpy().ravel(), matrix.shape),
+    #                       dtype='int32',
+    #                       ctx=matrix.context)
+    best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(mx.nd.unravel_index(indices.astype(np.int32).reshape(-1), matrix.shape),
                           dtype='int32',
                           ctx=matrix.context)
     if batch_size > 1:

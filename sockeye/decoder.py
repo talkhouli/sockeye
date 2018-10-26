@@ -376,7 +376,6 @@ class TransformerDecoder(Decoder):
 
         target_enc_att_sum = target_enc_att_sum / float(len(target_enc_atts)) \
             if target_enc_att_sum is not None else None
-        # TODO(fhieber): no attention probs for now
         #attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
         attention_probs = target_enc_att_sum
         if attention_probs is None:
