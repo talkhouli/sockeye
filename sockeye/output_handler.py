@@ -51,7 +51,9 @@ def get_output_handler(output_type: str,
     elif output_type == C.OUTPUT_HANDLER_ALIGNMENT:
         return AlignmentsOutputHandler(output_stream)
     elif output_type == C.OUTPUT_HANDLER_JOINT:
-        return JointOutputHandler(output_stream)
+        return JointOutputHandler(output_stream, mode='hard')
+    elif output_type == C.OUTPUT_HANDLER_JOINT_SOFT:
+        return JointOutputHandler(output_stream, mode='soft')
     elif output_type == C.OUTPUT_HANDLER_ALIGNMENT_ONE_HOT:
         return StringWithAlignmentOneHotMatrixOutputHandler(output_stream)
     else:
@@ -157,7 +159,9 @@ class JointOutputHandler(StringOutputHandler):
 
     :param stream: Stream to write translations and alignments to.
     """
-    def __init__(self, stream) -> None:
+    def __init__(self, stream, mode) -> None:
+        self.mode = mode
+        assert mode == "hard" or mode == "soft"
         super().__init__(stream)
 
     def handle(self,
@@ -171,9 +175,13 @@ class JointOutputHandler(StringOutputHandler):
         """
         if len(t_output.tokens) == 0:
             return
-
-        alignments = " ".join(
-            ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
+        if self.mode == 'hard':
+            alignments = " ".join(
+                ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
+        elif self.mode == 'soft':
+            alignments = " ".join(
+                ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(np.argmax(t_output.attention_matrix, axis=1))]
+            )
         self.stream.write("%s # %s # alignment %s\n" % (t_input.sentence, t_output.translation, alignments.strip()))
         self.stream.flush()
 
