@@ -180,7 +180,7 @@ class JointOutputHandler(StringOutputHandler):
                 ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
         elif self.mode == 'soft':
             alignments = " ".join(
-                ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(np.argmax(t_output.attention_matrix, axis=1))]
+                    ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(np.argmax(t_output.attention_matrix, axis=1)[:len(t_output.tokens) - 1])]
             )
         self.stream.write("%s # %s # alignment %s\n" % (t_input.sentence, t_output.translation, alignments.strip()))
         self.stream.flush()
