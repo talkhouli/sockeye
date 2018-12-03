@@ -1523,7 +1523,7 @@ class Translator:
                         #src_pos = src_pos.astype(dtype="int32").asscalar() -align_idx_offset(t) +\
                         #          (1 if self.use_unaligned else 0)
                         source_word_str = self.vocab_source_inv[int(source_word.asscalar())]
-                        if source_word_str in self.dictionary[self.seq_idx]:
+                        if self.seq_idx in self.dictionary and source_word_str in self.dictionary[self.seq_idx]:
                             target_word_str = self.dictionary[self.seq_idx][source_word_str]
                             if target_word_str in self.vocab_target:
                                 target_word = self.vocab_target[target_word_str]
