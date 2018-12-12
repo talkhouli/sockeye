@@ -168,6 +168,9 @@ def translate(output_handler: output_handler.OutputHandler, source_data: Iterabl
                                                                                 reference_data
                                                                                     if reference_data else [None]),
                                                           chunk_id + 1)]
+    if translator.dictionary is not None:
+        utils.check_condition(translator.batch_size == 1, "Dictionary replacement works only with batch size 1")
+        translator.seq_idx = trans_inputs[0].id - 1
     trans_outputs = translator.translate(trans_inputs)
     total_time = time.time() - tic
     batch_time = total_time / len(trans_inputs)

@@ -1033,7 +1033,8 @@ class Translator:
                     reference_batch = reference_batch + [reference_batch[0]] * rest
             batch_translations = self.translate_nd(*self._get_inference_input(batch,reference_batch),batch)
 
-            self.seq_idx += 1
+            # TODO FIX
+            #self.seq_idx += 1
             # truncate to remove filler translations
             if rest > 0:
                 batch_translations = batch_translations[:-rest]
