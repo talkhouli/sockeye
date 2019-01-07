@@ -98,6 +98,9 @@ def main():
             translator.dictionary_override_with_max_attention = args.dictionary_override_with_max_attention
             if translator.dictionary_override_with_max_attention:
                 utils.check_condition(args.batch_size==1, "batching not supported with dictionary override yet")
+            translator.dictionary_ignore_se = args.dictionary_ignore_se
+            if translator.dictionary_ignore_se:
+                utils.check_condition(args.batch_size==1, "batching not supported with dictionary override yet")
             read_and_translate(translator, out_handler, args.chunk_size, args.input, args.reference)
 
 def read_and_translate(translator: inference.Translator, output_handler: output_handler.OutputHandler,

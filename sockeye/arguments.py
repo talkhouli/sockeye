@@ -923,6 +923,11 @@ def add_inference_args(params):
                              default=False,
                              help="Override using maximum attention weight. "
                                   "Default: %(default)s.")
+    decode_params.add_argument('--dictionary-ignore-se',
+                               action="store_true",
+                               default=False,
+                               help="Ignore attentions to sentence end. "
+                                    "Default: %(default)s.")
 
     decode_params.add_argument('--models', '-m',
                                required=True,

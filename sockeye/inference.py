@@ -879,6 +879,7 @@ class Translator:
         self.align_weight = align_weight
         self.dictionary = None
         self.dictionary_override_with_max_attention = False
+        self.dictionary_ignore_se = False
         self.seq_idx = 0  #used with dictionaries, batching not supported
         self.align_skip_threshold = align_skip_threshold
         self.align_k_best = align_k_best
@@ -1509,7 +1510,17 @@ class Translator:
     def _override_scores_with_dictionary(self,scores,attention_scores,source,t,alignment_based):
         if alignment_based:
             if self.dictionary_override_with_max_attention:
-                max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+                if not self.dictionary_ignore_se:
+                    max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+                else:
+                    condition = mx.nd.expand_dims(
+                        mx.nd.expand_dims((source != self.vocab_source[C.EOS_SYMBOL]).reshape(-1), axis=0), axis=0)
+                    condition = mx.nd.broadcast_to(condition, attention_scores[:scores.shape[0]].shape)
+                    tmp_attention = mx.nd.where(condition,
+                                                attention_scores[:scores.shape[0]],
+                                                mx.nd.zeros_like(attention_scores[:scores.shape[0]])
+                                                )
+                    max_attention = mx.nd.argmax(tmp_attention, axis=2)
                 max_attention_cpu = max_attention.copyto(source.context)
                 #new_source = mx.nd.expand_dims(source, axis=1).broadcast_to(
                 #    (max_attention_cpu.shape[0], scores.shape[1], source.shape[1]))
@@ -1545,7 +1556,17 @@ class Translator:
                             scores[:, j, target_word] = target_word_scores
 
         else:
-            max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+            if not self.dictionary_ignore_se:
+                max_attention = mx.ndarray.argmax(attention_scores[:scores.shape[0]], axis=2)
+            else:
+                condition = mx.nd.expand_dims(
+                    mx.nd.expand_dims((source != self.vocab_source[C.EOS_SYMBOL]).reshape(-1), axis=0), axis=0)
+                condition = mx.nd.broadcast_to(condition, attention_scores[:scores.shape[0]].shape)
+                tmp_attention = mx.nd.where(condition,
+                                            attention_scores[:scores.shape[0]],
+                                            mx.nd.zeros_like(attention_scores[:scores.shape[0]])
+                                            )
+                max_attention = mx.nd.argmax(tmp_attention, axis=2)
             max_attention_cpu = max_attention.copyto(source.context)
             max_attention_source_words = mx.nd.pick(
                 source.broadcast_to((max_attention_cpu.shape[0], source.shape[1])),
