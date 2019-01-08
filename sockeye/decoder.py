@@ -192,8 +192,23 @@ class TransformerDecoder(Decoder):
                  prefix: str = C.TRANSFORMER_DECODER_PREFIX) -> None:
         self.config = config
         self.prefix = prefix
+        if isinstance(config.alignment_assisted, list):
+            utils.check_condition(len(config.alignment_assisted) == 1 or len(config.alignment_assisted) == config.num_layers,
+                              "--alignment-assisted must be a single float or a list of floats for each layer")
+            self.alignment_assisted = config.alignment_assisted if len(config.alignment_assisted) > 1 else config.alignment_assisted * config.num_layers
+        else:
+            self.alignment_assisted = [config.alignment_assisted] * config.num_layers
+
+        utils.check_condition(not config.alignment_model or
+                any([x > 0.0 for x in self.alignment_assisted]),
+                "--alignment-assisted must be greater 0.0 for alignment models")
+
+        self.align_assisted_prob = mx.sym.Custom(op_type="AlignBiasProb", low=0, high=1)
         self.layers = [transformer.TransformerDecoderBlock(
-            config, prefix="%s%d_" % (prefix, i)) for i in range(config.num_layers)]
+            config,
+            prefix="%s%d_" % (prefix, i),
+            alignment_assisted=self.alignment_assisted[i],
+            align_assisted_prob=self.align_assisted_prob) for i in range(config.num_layers)]
         self.final_process = transformer.TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                                  num_hidden=config.model_size,
                                                                  dropout=config.dropout_prepost,
@@ -208,6 +223,7 @@ class TransformerDecoder(Decoder):
 
         self.debug_alignment = None
         self.debug_attention = []
+        self.vis_target_enc_attention_layer = 0
 
     def decode_sequence(self,
                         source_encoded: mx.sym.Symbol,
@@ -234,6 +250,12 @@ class TransformerDecoder(Decoder):
         :param output_embed: output labels embeddings. Shape: (batch_size,target_embed_max_length,output_num_embed)
         :return: Decoder data. Shape: (batch_size, target_embed_max_length, decoder_depth).
         """
+
+        self.debug_alignment = alignment
+        # NOTE: add last alignment to debug symbols so we "use" it and the software does not complain
+        self.debug_last_alignment = last_alignment
+        self.debug_attention = []
+
         # (batch_size, source_max_length, num_source_embed)
         source_encoded = mx.sym.swapaxes(source_encoded, dim1=0, dim2=1)
 
@@ -261,7 +283,7 @@ class TransformerDecoder(Decoder):
                                       end=target_embed_max_length,
                                       name="%salignment_sliced" % self.prefix) if alignment is not None else None
         for layer in self.layers:
-            target = layer(target=target,
+            target, _ = layer(target=target,
                            target_bias=target_bias,
                            source=source_encoded,
                            source_bias=source_bias,
@@ -320,14 +342,18 @@ class TransformerDecoder(Decoder):
         # retrieve precomputed self-attention keys & values for each layer from states.
         layer_caches = self._get_layer_caches_from_states(list(states))
         cache = []  # type: List[mx.sym.Symbol]
-        for layer, layer_cache in zip(self.layers, layer_caches):
-            target = layer(target=target,
+        target_enc_atts = []
+        target_enc_att_norm = float(len(self.layers)) if self.vis_target_enc_attention_layer else 1.0
+        for idx, (layer, layer_cache) in enumerate(zip(self.layers, layer_caches)):
+            target, target_enc_att = layer(target=target,
                            target_bias=target_bias,
                            source=source_encoded,
                            source_bias=source_bias,
                            cache=layer_cache,
                            source_seq_len=source_encoded_max_length,
                            alignment=alignment)
+            if self.vis_target_enc_attention_layer == -1 or self.vis_target_enc_attention_layer == idx:
+                target_enc_atts.append(target_enc_att)
             # store updated keys and values in the cache.
             # (layer.__call__() has the side-effect of updating contents of layer_cache)
             cache += [layer_cache['k'], layer_cache['v']]
@@ -338,10 +364,25 @@ class TransformerDecoder(Decoder):
         # (batch_size, model_size)
         target = mx.sym.reshape(target, shape=(-3, -1))
 
-        # TODO(fhieber): no attention probs for now
-        attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
 
+        # (batch, heads, 1, source length) -> (batch, heads, source length)
+        target_enc_att_sum = None
+        for attention  in target_enc_atts:
+            if target_enc_att_sum is None:
+                target_enc_att_sum = mx.sym.sum(mx.sym.reshape(attention, shape=(0, 0, -1)), axis=1, keepdims=False)
+            else:
+                target_enc_att_sum = target_enc_att_sum + mx.sym.sum(mx.sym.reshape(attention, shape=(0, 0, -1)), axis=1,
+                                                keepdims=False)
+
+        target_enc_att_sum = target_enc_att_sum / float(len(target_enc_atts)) \
+            if target_enc_att_sum is not None else None
+        #attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
+        attention_probs = target_enc_att_sum
+        if attention_probs is None:
+            attention_probs = mx.sym.sum(mx.sym.zeros_like(source_encoded), axis=2, keepdims=False)
+            
         new_states = [source_encoded, source_encoded_lengths, cache]
+        #self.debug_attention.append(target_enc_att_sum)
         return target, attention_probs, new_states
 
     def _get_layer_caches_from_states(self, states: List[mx.sym.Symbol]) -> List[Dict[str, Optional[mx.sym.Symbol]]]:
@@ -360,7 +401,7 @@ class TransformerDecoder(Decoder):
             # len(self.layers) * 2 cache items
             cache = mx.sym.split(cache, num_outputs=len(self.layers) * 2, axis=1, squeeze_axis=False)
 
-        if not cache:  # first decoder step
+        if cache is None:  # first decoder step
             return [{'k': None, 'v': None} for _ in range(len(self.layers))]
         else:
             layer_caches = []  # type: List[Dict[str, Optional[mx.sym.Symbol]]]

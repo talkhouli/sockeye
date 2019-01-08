@@ -35,6 +35,7 @@ import numpy as np
 import constants as C
 from sockeye import __version__
 from log import log_sockeye_version, log_mxnet_version
+import gzip
 
 logger = logging.getLogger(__name__)
 
@@ -247,13 +248,53 @@ def smallest_k_mx(matrix: mx.nd.NDArray, k: int,
     :param only_first_row: If True the search is constrained to the first row of the matrix.
     :return: The row indices, column indices and values of the k smallest items in matrix.
     """
+
     if only_first_row:
-        matrix = mx.nd.reshape(matrix[0], shape=(1, -1))
-
+        folded_matrix = mx.nd.reshape(matrix[0], shape=(-1))
+    else:
+        folded_matrix = matrix.reshape(-1)
     # pylint: disable=unbalanced-tuple-unpacking
-    values, indices = mx.nd.topk(matrix, axis=None, k=k, ret_typ='both', is_ascend=True)
+    values, indices = mx.nd.topk(folded_matrix, axis=None, k=k, ret_typ='both', is_ascend=True, dtype="int32")
 
-    return np.unravel_index(indices.astype(np.int32).asnumpy(), matrix.shape), values
+    indices = np.unravel_index(indices.reshape(-1).astype(np.int64).asnumpy(), matrix.shape)
+    logger.info(indices)
+    return indices, values
+
+
+def smallest_k_mx_batched(matrix: mx.nd.NDArray,
+                          k: int,
+                          batch_size: int,
+                          offset: mx.nd.NDArray,
+                          only_first_row: bool = False) -> Tuple[Tuple[np.ndarray, np.ndarray], np.ndarray]:
+    """
+    Find the smallest elements in a NDarray.
+
+    :param matrix: Any matrix.
+    :param k: The number of smallest elements to return.
+    :param only_first_row: If True the search is constrained to the first row of the matrix.
+    :return: The row indices, column indices and values of the k smallest items in matrix.
+    """
+
+    if only_first_row:
+        folded_matrix = matrix.reshape((-4, batch_size, -1, 0, 0))
+        folded_matrix = folded_matrix[:, 0, :, :]
+    else:
+        folded_matrix = matrix
+
+    folded_matrix = folded_matrix.reshape((batch_size,-1))
+    # pylint: disable=unbalanced-tuple-unpacking
+    values, indices = mx.nd.topk(folded_matrix, axis=1, k=k, ret_typ='both', is_ascend=True, dtype="int32")
+    # best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(np.unravel_index(indices.astype(np.int32).asnumpy().ravel(), matrix.shape),
+    #                       dtype='int32',
+    #                       ctx=matrix.context)
+    best_hyp_indices, best_hyp_pos_indices, best_word_indices = mx.nd.array(mx.nd.unravel_index(indices.astype(np.int32).reshape(-1), matrix.shape),
+                          dtype='int32',
+                          ctx=matrix.context)
+    if batch_size > 1:
+        best_hyp_indices += offset
+
+#    assert(mx.nd.nansum(values.reshape(-1) - matrix[best_hyp_indices, best_hyp_pos_indices, best_word_indices]) == 0)
+    return (best_hyp_indices, best_hyp_pos_indices, best_word_indices), values.reshape(-1)
 
 
 def chunks(some_list: List, n: int) -> Iterable[List]:
@@ -261,6 +302,24 @@ def chunks(some_list: List, n: int) -> Iterable[List]:
     for i in range(0, len(some_list), n):
         yield some_list[i:i + n]
 
+
+def smart_open(filename: str, mode: str = "rt", ftype: str = "auto", errors: str = 'replace'):
+    """
+    Returns a file descriptor for filename with UTF-8 encoding.
+    If mode is "rt", file is opened read-only.
+    If ftype is "auto", uses gzip iff filename endswith .gz.
+    If ftype is {"gzip","gz"}, uses gzip.
+    Note: encoding error handling defaults to "replace"
+    :param filename: The filename to open.
+    :param mode: Reader mode.
+    :param ftype: File type. If 'auto' checks filename suffix for gz to try gzip.open
+    :param errors: Encoding error handling during reading. Defaults to 'replace'
+    :return: File descriptor
+    """
+    if ftype == 'gzip' or ftype == 'gz' or (ftype == 'auto' and filename.endswith(".gz")):
+        return gzip.open(filename, mode=mode, encoding='utf-8', errors=errors)
+    else:
+        return open(filename, mode=mode, encoding='utf-8', errors=errors)
 
 def plot_attention(attention_matrix: np.ndarray, source_tokens: List[str], target_tokens: List[str], filename: str):
     """
@@ -761,6 +820,56 @@ class AlignBiasProbProp(mx.operator.CustomOpProp):
 
     def create_operator(self, ctx, shapes, dtypes):
         return AlignBiasProb(low=self.low, high=self.high)
+
+class InferenceScale(mx.operator.CustomOp):
+    """
+    Custom operator that takes a symbol, prints its value to stdout and
+    propagates the value unchanged. Useful for debugging.
+
+    Use it as:
+    my_sym = mx.sym.Custom(op_type="PrintValue", data=my_sym, print_name="My symbol")
+
+    Additionally you can use the optional arguments 'use_logger=True' for using
+    the system logger and 'print_grad=True' for printing information about the
+    gradient (out_grad, i.e. "upper part" of the graph).
+    """
+    def __init__(self, scalar: float):
+        super().__init__()
+        self.scalar = float(scalar)
+
+    def forward(self, is_train, req, in_data, out_data, aux):
+        if not is_train:
+            scaled = self.scalar * in_data[0]
+            self.assign(out_data[0], req[0], scaled)
+        else:
+            self.assign(out_data[0], req[0], in_data[0])
+
+
+    def backward(self, req, out_grad, in_data, out_data, in_grad, aux):
+        self.assign(in_grad[0], req[0], out_grad[0])
+
+
+@mx.operator.register("InferenceScale")
+class InferenceScaleProp(mx.operator.CustomOpProp):
+    def __init__(self, scalar: float):
+        super().__init__(need_top_grad=True)
+        self.scalar = float(scalar)
+
+    def list_arguments(self):
+        return ["data"]
+
+    def list_outputs(self):
+        return ["output"]
+
+    def infer_shape(self, in_shape):
+        return in_shape, in_shape, []
+
+    def infer_type(self, in_type):
+        return in_type, in_type, []
+
+    def create_operator(self, ctx, shapes, dtypes):
+        return InferenceScale(scalar=self.scalar)
+
 
 def grouper(iterable: Iterable, size: int) -> Iterable:
     """

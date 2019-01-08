@@ -691,6 +691,8 @@ class ParallelBucketSentenceIter(mx.io.DataIter):
                                 layout=C.BATCH_MAJOR))
             self.data_names.append(self.alignment_data_name)
 
+            # TODO only provide data if it is actually used
+            # remove debug symbol last alignment if that is solved
             self.provide_data.append(
                 mx.io.DataDesc(name=self.last_alignment_data_name,
                                shape=(self.bucket_batch_sizes[-1].batch_size, self.default_bucket_key[1]),

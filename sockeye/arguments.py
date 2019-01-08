@@ -591,7 +591,8 @@ def add_model_parameters(params):
                               help="alignment bias rate during training. Default: %(default)s.")
     model_params.add_argument('--alignment-assisted',
                               type=float,
-                              default=0.0,
+                              nargs="+",
+                              default=[0.0],
                               help="concatenate source context selected using alignment with"
                                    "attention-weighted context. Value determines how often"
                                    "this takes place during training. Default: %(default)s.")
@@ -922,6 +923,11 @@ def add_inference_args(params):
                              default=False,
                              help="Override using maximum attention weight. "
                                   "Default: %(default)s.")
+    decode_params.add_argument('--dictionary-ignore-se',
+                               action="store_true",
+                               default=False,
+                               help="Ignore attentions to sentence end. "
+                                    "Default: %(default)s.")
 
     decode_params.add_argument('--models', '-m',
                                required=True,
@@ -1010,6 +1016,22 @@ def add_inference_args(params):
                                type=float,
                                default=0.0,
                                help='Alignment model weight for alignment-based NMT.  Default: %(default)s')
+    decode_params.add_argument('--align-threshold',
+                               type=float,
+                               default=0.0,
+                               help='Probability threshold for alignment points to be considered. 0.0 to disable. '
+                                    'Default: %(default)s')
+    decode_params.add_argument('--align-beam-size',
+                               type=int,
+                               default=0,
+                               help='Use k-best alignment points to translate, prune all others. 0 to disable. '
+                                    'Not usable if --align-threshold > 0'
+                                    'Default: %(default)s')
+    decode_params.add_argument('--vis-target-enc-attention-layer',
+                               type=int,
+                               default=0,
+                               help='choose which layer to visualize. -1 to sum up all. '
+                                    'Default: %(default)s')
 
 
 def add_evaluate_args(params):

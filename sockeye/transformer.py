@@ -99,7 +99,7 @@ class TransformerEncoderBlock:
 
     def __call__(self, data: mx.sym.Symbol, bias: mx.sym.Symbol) -> mx.sym.Symbol:
         # self-attention
-        data_self_att = self.self_attention(inputs=self.pre_self_attention(data, None),
+        data_self_att, _ = self.self_attention(inputs=self.pre_self_attention(data, None),
                                             bias=bias,
                                             cache=None)
         data = self.post_self_attention(data_self_att, data)
@@ -119,15 +119,16 @@ class TransformerDecoderBlock:
 
     def __init__(self,
                  config: TransformerConfig,
-                 prefix: str) -> None:
+                 prefix: str,
+                 alignment_assisted: bool = False,
+                 align_assisted_prob: mx.sym.Symbol = None) -> None:
 
-        utils.check_condition(not config.alignment_model or config.alignment_assisted > 0.0,
-                              "--alignment-assisted must be greater 0.0 for alignment models")
+        #utils.check_condition(not config.alignment_model or alignment_assisted > 0.0,
+        #                      "--alignment-assisted must be greater 0.0 for alignment models")
 
         self.prefix = prefix
         self.alignment_model = config.alignment_model
-        self.alignment_assisted = config.alignment_assisted
-
+        self.alignment_assisted = alignment_assisted
 
         self.pre_self_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                           num_hidden=config.model_size,
@@ -143,7 +144,7 @@ class TransformerDecoderBlock:
                                                            dropout=config.dropout_prepost,
                                                            prefix="%satt_self_post_" % prefix)
 
-        if not config.alignment_model:
+        if not self.alignment_model:
             self.pre_enc_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
                                                              num_hidden=config.model_size,
                                                              dropout=config.dropout_prepost,
@@ -162,7 +163,8 @@ class TransformerDecoderBlock:
             # use full model size in case of alignment model to match target embedding
             alignment_head_size = config.model_size // config.attention_heads if not self.alignment_model else config.model_size
             self.alignment_head = layers.Alignment(num_hidden=alignment_head_size,
-                                                   alignment_assisted=config.alignment_assisted,
+                                                   alignment_assisted=self.alignment_assisted,
+                                                   align_assisted_prob=align_assisted_prob,
                                                    prefix="%salign_head_" % prefix)
         else:
             self.alignment_head = None
@@ -200,20 +202,25 @@ class TransformerDecoderBlock:
                  alignment: mx.sym.Symbol = None) -> mx.sym.Symbol:
 
         # self-attention
-        target_self_att = self.self_attention(inputs=self.pre_self_attention(target, None),
+        target_self_att, _ = self.self_attention(inputs=self.pre_self_attention(target, None),
                                               bias=target_bias,
                                               cache=cache)
         target = self.post_self_attention(target_self_att, target)
 
         # encoder attention
-        align_context =  self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
-            if self.alignment_assisted > 0 else None
+        align_context, align_probs = self.alignment_head(source=source, alignment=alignment, source_seq_len=source_seq_len) \
+            if self.alignment_assisted > 0 else (None, None)
 
-        target_enc_att = self.enc_attention(queries=self.pre_enc_attention(target, None),
+        # TODO return attention values
+        target_enc_att, target_enc_att_val = self.enc_attention(queries=self.pre_enc_attention(target, None),
                                             memory=source,
                                             bias=source_bias,
-                                            additional_head=align_context) \
-            if not self.alignment_model else align_context
+                                            additional_head=align_context,
+                                            additional_probs=align_probs) \
+            if not self.alignment_model else (align_context, alignment)  # TODO check if shapes are correct
+
+        if target_enc_att is None:
+            target_enc_att = mx.sym.zeros_like(data=target, name="%szeros_target_enc_att" % self.prefix)
 
         target = self.post_enc_attention(target_enc_att, target)
 
@@ -221,7 +228,7 @@ class TransformerDecoderBlock:
         target_ff = self.ff(self.pre_ff(target, None))
         target = self.post_ff(target_ff, target)
 
-        return target
+        return target, target_enc_att_val
 
 
 class TransformerProcessBlock:

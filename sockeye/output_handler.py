@@ -50,6 +50,10 @@ def get_output_handler(output_type: str,
         return AlignTextHandler(sure_align_threshold)
     elif output_type == C.OUTPUT_HANDLER_ALIGNMENT:
         return AlignmentsOutputHandler(output_stream)
+    elif output_type == C.OUTPUT_HANDLER_JOINT:
+        return JointOutputHandler(output_stream, mode='hard')
+    elif output_type == C.OUTPUT_HANDLER_JOINT_SOFT:
+        return JointOutputHandler(output_stream, mode='soft')
     elif output_type == C.OUTPUT_HANDLER_ALIGNMENT_ONE_HOT:
         return StringWithAlignmentOneHotMatrixOutputHandler(output_stream)
     else:
@@ -145,6 +149,46 @@ class AlignmentsOutputHandler(StringOutputHandler):
             ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
         self.stream.write("%s\n" % (alignments.strip()))
         self.stream.flush()
+
+
+class JointOutputHandler(StringOutputHandler):
+    """
+    Output handler to write source, translation and alignments to a stream. Fields are separated by a #
+    Alignments are written in the format:
+    S SOURCE_POS TARGET_POS
+
+    :param stream: Stream to write translations and alignments to.
+    """
+    def __init__(self, stream, mode) -> None:
+        self.mode = mode
+        assert mode == "hard" or mode == "soft"
+        super().__init__(stream)
+
+    def handle(self,
+               t_input: inference.TranslatorInput,
+               t_output: inference.TranslatorOutput,
+               t_walltime: float = 0.):
+        """
+        :param t_input: Translator input.
+        :param t_output: Translator output.
+        :param t_walltime: Total wall-clock time for translation.
+        """
+        if len(t_output.tokens) == 0:
+            return
+        if self.mode == 'hard':
+            alignments = " ".join(
+                ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(t_output.alignment[1:len(t_output.tokens)])])
+        elif self.mode == 'soft':
+            attentions = t_output.attention_matrix
+            sentence_end = attentions[-1:-1]
+            attentions[:,-1] = 0
+            attentions[-1:-1] = sentence_end
+            alignments = " ".join(
+                    ["S %d %d" % (j, i) if j > -1 and i < len(t_output.tokens) else "" for i, j in enumerate(np.argmax(attentions, axis=1)[:len(t_output.tokens) - 1])]
+            )
+        self.stream.write("%s # %s # alignment %s\n" % (t_input.sentence, t_output.translation, alignments.strip()))
+        self.stream.flush()
+
 
 class StringWithAlignmentsOutputHandler(StringOutputHandler):
     """

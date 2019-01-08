@@ -234,7 +234,7 @@ ARGS_STATE_NAME = "args.json"
 # Arguments that may differ and still resume training
 ARGS_MAY_DIFFER = ["overwrite_output", "use-tensorboard", "quiet",
                    "align_plot_prefix", "sure_align_threshold",
-                   "keep_last_params", "source", 
+                   "keep_last_params", "source",
                    "target", "alignment", "validation_source",
                    "validation_target", "validation_alignment"]
 
@@ -305,6 +305,8 @@ OUTPUT_HANDLER_BENCHMARK = "benchmark"
 OUTPUT_HANDLER_ALIGN_PLOT = "align_plot"
 OUTPUT_HANDLER_ALIGN_TEXT = "align_text"
 OUTPUT_HANDLER_ALIGNMENT = "alignment"
+OUTPUT_HANDLER_JOINT = "joint"
+OUTPUT_HANDLER_JOINT_SOFT = "joint_soft"
 OUTPUT_HANDLER_ALIGNMENT_ONE_HOT = "alignment_one_hot"
 OUTPUT_HANDLERS = [OUTPUT_HANDLER_TRANSLATION,
                    OUTPUT_HANDLER_TRANSLATION_WITH_SCORE,
@@ -314,6 +316,8 @@ OUTPUT_HANDLERS = [OUTPUT_HANDLER_TRANSLATION,
                    OUTPUT_HANDLER_ALIGN_PLOT,
                    OUTPUT_HANDLER_ALIGN_TEXT,
                    OUTPUT_HANDLER_ALIGNMENT,
+                   OUTPUT_HANDLER_JOINT,
+                   OUTPUT_HANDLER_JOINT_SOFT,
                    OUTPUT_HANDLER_ALIGNMENT_ONE_HOT]
 
 # metrics
